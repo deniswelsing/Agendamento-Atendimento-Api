@@ -30,6 +30,7 @@ public static class CatalogoRecursos
     public const string Vendas = "vendas";
     public const string PaginaOnline = "pagina-online";
     public const string LembreteEmail = "lembrete-email";
+    public const string ContratosESinal = "contratos-e-sinal";
 
     public const string MultiUsuario = "multi-usuario";
     public const string JornadaPorPessoa = "jornada-por-pessoa";
@@ -39,12 +40,16 @@ public static class CatalogoRecursos
     public const string GoogleCalendar = "google-calendar";
     public const string AgendamentoRecorrente = "agendamento-recorrente";
     public const string SemMarca = "sem-marca";
+    public const string Turmas = "turmas";
+    public const string ListaDeEspera = "lista-de-espera";
+    public const string LimiteDiario = "limite-diario";
 
     public const string RelatoriosAvancados = "relatorios-avancados";
     public const string Comissoes = "comissoes";
     public const string MultiUnidade = "multiunidade";
     public const string PermissoesAvancadas = "permissoes-avancadas";
     public const string SalasEEquipamentos = "recursos-reservaveis";
+    public const string PontoDoTime = "ponto-do-time";
 
     public const string Onboarding = "onboarding-dedicado";
     public const string ApiPublica = "api-publica";
@@ -63,6 +68,7 @@ public static class CatalogoRecursos
         new(Vendas, "Vendas e recebimentos", GrupoGestao, 1),
         new(PaginaOnline, "Página de agendamento online", GrupoAgenda, 1),
         new(LembreteEmail, "Lembretes automáticos por e-mail", GrupoAgenda, 1),
+        new(ContratosESinal, "Contratos, pré-pagamento e sinal", GrupoGestao, 1),
 
         new(MultiUsuario, "Vários usuários no time", GrupoTime, 2,
             "Cada usuário além dos inclusos entra na assinatura."),
@@ -73,9 +79,14 @@ public static class CatalogoRecursos
         new(GoogleCalendar, "Sincronização com Google Calendar", GrupoAgenda, 2),
         new(AgendamentoRecorrente, "Agendamento recorrente", GrupoAgenda, 2),
         new(SemMarca, "Sem a marca da plataforma", GrupoAgenda, 2),
+        new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2),
+        new(ListaDeEspera, "Lista de espera", GrupoAgenda, 2),
+        new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2),
 
         new(RelatoriosAvancados, "Relatórios avançados e lucratividade", GrupoGestao, 3),
-        new(Comissoes, "Comissões e folha do time", GrupoTime, 3),
+        new(Comissoes, "Comissões e folha do time", GrupoTime, 3,
+            "Inclui comissão fixa e mais de uma faixa de valor-hora."),
+        new(PontoDoTime, "Registro de ponto e horas do time", GrupoTime, 3),
         new(MultiUnidade, "Várias unidades", GrupoGestao, 3),
         new(PermissoesAvancadas, "Permissões avançadas por perfil", GrupoTime, 3),
         new(SalasEEquipamentos, "Salas e equipamentos com reserva", GrupoTime, 3),

@@ -107,20 +107,24 @@ public class CatalogoRecursosTests
     }
 
     /// <summary>
-    /// A migração RecursosPorPlano grava as chaves em SQL literal. Se o catálogo mudar sem
-    /// que uma nova migração acompanhe, o banco fica para trás — este teste denuncia.
+    /// A última migração de recursos grava as chaves em SQL literal. Se o catálogo mudar
+    /// sem que uma nova migração acompanhe, o banco fica para trás — este teste denuncia.
+    /// Ao acrescentar um recurso: crie a migração e atualize as constantes abaixo.
     /// </summary>
     [Fact]
-    public void A_migracao_grava_exatamente_o_que_o_catalogo_diz()
+    public void A_ultima_migracao_grava_exatamente_o_que_o_catalogo_diz()
     {
-        const string nivel1 = "agendamentos,clientes,catalogo,vendas,pagina-online,lembrete-email";
+        // RecursosRevisadosComSquare
+        const string nivel1 =
+            "agendamentos,clientes,catalogo,vendas,pagina-online,lembrete-email,contratos-e-sinal";
 
         const string nivel2 = nivel1 +
             ",multi-usuario,jornada-por-pessoa,politica-cancelamento,cartao-em-arquivo" +
-            ",lembrete-sms-whatsapp,google-calendar,agendamento-recorrente,sem-marca";
+            ",lembrete-sms-whatsapp,google-calendar,agendamento-recorrente,sem-marca" +
+            ",turmas,lista-de-espera,limite-diario";
 
         const string nivel3 = nivel2 +
-            ",relatorios-avancados,comissoes,multiunidade,permissoes-avancadas" +
+            ",relatorios-avancados,comissoes,ponto-do-time,multiunidade,permissoes-avancadas" +
             ",recursos-reservaveis";
 
         const string nivel4 = nivel3 + ",onboarding-dedicado,api-publica,gerente-de-conta";
@@ -129,5 +133,29 @@ public class CatalogoRecursosTests
         Assert.Equal(nivel2, CatalogoRecursos.ListaAteNivel(2));
         Assert.Equal(nivel3, CatalogoRecursos.ListaAteNivel(3));
         Assert.Equal(nivel4, CatalogoRecursos.ListaAteNivel(4));
+    }
+
+    /// <summary>
+    /// Os degraus vieram da tabela do Square Appointments. Um recurso que mude de degrau
+    /// muda o que a empresa paga, então a colocação de cada um é fixada aqui.
+    /// </summary>
+    [Theory]
+    [InlineData(CatalogoRecursos.ContratosESinal, 1)]
+    [InlineData(CatalogoRecursos.PaginaOnline, 1)]
+    [InlineData(CatalogoRecursos.Turmas, 2)]
+    [InlineData(CatalogoRecursos.ListaDeEspera, 2)]
+    [InlineData(CatalogoRecursos.LimiteDiario, 2)]
+    [InlineData(CatalogoRecursos.PoliticaCancelamento, 2)]
+    [InlineData(CatalogoRecursos.CartaoEmArquivo, 2)]
+    [InlineData(CatalogoRecursos.PontoDoTime, 3)]
+    [InlineData(CatalogoRecursos.SalasEEquipamentos, 3)]
+    [InlineData(CatalogoRecursos.PermissoesAvancadas, 3)]
+    [InlineData(CatalogoRecursos.Comissoes, 3)]
+    public void Cada_recurso_esta_no_degrau_do_Square(string chave, int degrau)
+    {
+        var recurso = CatalogoRecursos.Obter(chave);
+
+        Assert.NotNull(recurso);
+        Assert.Equal(degrau, recurso!.NivelMinimo);
     }
 }

@@ -139,12 +139,18 @@ mesmo para o plano atual, já agrupado, que é o formato da tela de assinatura.
 
 Os degraus acumulam — cada plano tem tudo do anterior:
 
-| Degrau | Plano | Recursos |
-|---|---|---|
-| 1 | Basic | agendamentos, clientes, catálogo, vendas, página de agendamento online, lembrete por e-mail |
-| 2 | Platinum | + vários usuários no time, jornada por pessoa, política de cancelamento, cartão em arquivo, lembretes por SMS e WhatsApp, Google Calendar, agendamento recorrente, sem a marca da plataforma |
-| 3 | Ultimate | + relatórios avançados, comissões, várias unidades, permissões avançadas por perfil, salas e equipamentos |
-| 4 | Custom | + onboarding dedicado, API pública, gerente de conta |
+| Degrau | Plano | Recursos | Total |
+|---|---|---|---|
+| 1 | Basic | agendamentos, clientes, catálogo, vendas, página de agendamento online, lembrete por e-mail, contratos e sinal | 7 |
+| 2 | Platinum | + vários usuários no time, jornada por pessoa, política de cancelamento, cartão em arquivo, lembretes por SMS e WhatsApp, Google Calendar, agendamento recorrente, sem a marca, turmas e aulas, lista de espera, limite diário | 18 |
+| 3 | Ultimate | + relatórios avançados, comissões, ponto do time, várias unidades, permissões avançadas por perfil, salas e equipamentos | 24 |
+| 4 | Custom | + onboarding dedicado, API pública, gerente de conta | 27 |
 
-A fonte é `CatalogoRecursos` no domínio; `planos.recursos` guarda as chaves e a migração
-`RecursosPorPlano` traz os planos já gravados para elas.
+Os degraus seguem a tabela do Square Appointments (Free, Plus e Premium), com o degrau 4
+somando o que costuma ser acordo comercial. A colocação de cada recurso está fixada em
+teste: mudar um de degrau muda o que a empresa paga.
+
+A fonte é `CatalogoRecursos` no domínio; `planos.recursos` guarda as chaves. As migrações
+`RecursosPorPlano` e `RecursosRevisadosComSquare` trazem os planos já gravados para elas —
+ao acrescentar um recurso, crie uma nova migração e atualize as constantes do teste de
+deriva, nunca edite uma migração que já rodou.
