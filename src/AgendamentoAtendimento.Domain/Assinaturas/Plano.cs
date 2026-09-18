@@ -50,7 +50,10 @@ public class Plano : Entidade
     public bool Ativo { get; set; } = true;
     public bool IsCustom { get; set; }
 
-    /// <summary>Recursos liberados, separados por vírgula.</summary>
+    /// <summary>
+    /// Recursos liberados, separados por vírgula, com as chaves de
+    /// <see cref="CatalogoRecursos"/>. O valor histórico `tudo` libera o catálogo inteiro.
+    /// </summary>
     public string? Recursos { get; set; }
 
     // Identificadores nos gateways
@@ -64,4 +67,22 @@ public class Plano : Entidade
         ciclo == CicloCobranca.Mensal ? PrecoMensalUsd : PrecoAnualUsd;
 
     public bool Suporta(int assentos) => LimiteUsuarios is null || assentos <= LimiteUsuarios;
+
+    /// <summary>Chaves de recurso deste plano, já normalizadas.</summary>
+    public IReadOnlyList<string> ChavesDeRecurso()
+    {
+        var bruto = (Recursos ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (bruto.Any(c => string.Equals(c, CatalogoRecursos.Tudo, StringComparison.OrdinalIgnoreCase)))
+        {
+            return CatalogoRecursos.Todos.Select(r => r.Chave).ToList();
+        }
+
+        return CatalogoRecursos.Sanitizar(bruto);
+    }
+
+    /// <summary>O plano libera este recurso?</summary>
+    public bool Libera(string chave) =>
+        ChavesDeRecurso().Any(c => string.Equals(c, chave, StringComparison.OrdinalIgnoreCase));
 }

@@ -162,10 +162,18 @@ public sealed record PerfilDto(
 public sealed record PerfilRequest(string Nome, string? Descricao, IReadOnlyList<string> Permissoes);
 
 // ------------------------------------------------------------------- assinatura
+/// <summary>Um recurso do catálogo, já resolvido para o plano que está sendo mostrado.</summary>
+public sealed record RecursoDto(
+    string Chave, string Nome, string Grupo, string? Descricao,
+    bool Incluso, int NivelMinimo, string? PlanoMinimo);
+
+public sealed record GrupoRecursosDto(string Grupo, IReadOnlyList<RecursoDto> Recursos);
+
 public sealed record PlanoDto(
     long PlanoId, string Codigo, string Nome, string? Descricao,
     decimal? PrecoMensalUsd, decimal? PrecoAnualUsd, int UsuariosIncluidos, int? LimiteUsuarios,
     int Ordem, bool IsCustom, IReadOnlyList<string> Recursos,
+    IReadOnlyList<RecursoDto> Catalogo,
     string? PaddlePriceIdMensal, string? PaddlePriceIdAnual,
     string? PlayProductId, string? PlayBasePlanIdMensal, string? PlayBasePlanIdAnual);
 
@@ -212,6 +220,8 @@ public sealed record BootstrapDto(
     TenantDto Tenant,
     AssinaturaDto? Assinatura,
     IReadOnlyList<ModuloPermissaoDto> CatalogoPermissoes,
+    IReadOnlyList<RecursoDto> CatalogoRecursos,
+    IReadOnlyList<string> RecursosLiberados,
     IReadOnlyList<MembroTimeDto> Time,
     IReadOnlyList<FormaPagamentoDto> FormasPagamento,
     IReadOnlyList<HorarioFuncionamentoDto> HorarioFuncionamento,

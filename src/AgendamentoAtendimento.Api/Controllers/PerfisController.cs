@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
+using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using Microsoft.AspNetCore.Authorization;
@@ -59,6 +60,7 @@ public class PerfisController : ControllerBaseApi
 
     [HttpPost]
     [RequerPermissao("perfis.criar")]
+    [RequerRecurso(CatalogoRecursos.PermissoesAvancadas)]
     public async Task<ActionResult<PerfilDto>> Criar(PerfilRequest req, CancellationToken ct)
     {
         await GarantirNomeLivreAsync(req.Nome, null, ct);
@@ -74,6 +76,7 @@ public class PerfisController : ControllerBaseApi
 
     [HttpPut("{id:long}")]
     [RequerPermissao("perfis.editar")]
+    [RequerRecurso(CatalogoRecursos.PermissoesAvancadas)]
     public async Task<ActionResult<PerfilDto>> Atualizar(long id, PerfilRequest req, CancellationToken ct)
     {
         var perfil = NaoNulo(
@@ -98,6 +101,7 @@ public class PerfisController : ControllerBaseApi
 
     [HttpDelete("{id:long}")]
     [RequerPermissao("perfis.excluir")]
+    [RequerRecurso(CatalogoRecursos.PermissoesAvancadas)]
     public async Task<IActionResult> Remover(long id, CancellationToken ct)
     {
         var perfil = NaoNulo(

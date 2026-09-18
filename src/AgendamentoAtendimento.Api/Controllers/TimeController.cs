@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
+using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Seguranca;
@@ -59,6 +60,7 @@ public class TimeController : ControllerBaseApi
     /// </summary>
     [HttpPost("membros")]
     [RequerPermissao("time.convidar")]
+    [RequerRecurso(CatalogoRecursos.MultiUsuario)]
     public async Task<ActionResult<MembroTimeDto>> Convidar(ConvidarMembroRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Nome))

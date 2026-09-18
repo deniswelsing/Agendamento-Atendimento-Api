@@ -32,6 +32,7 @@ montar a navegação.
 
 ```
 GET /api/bootstrap -> usuario, tenant, assinatura, catalogoPermissoes,
+                      catalogoRecursos, recursosLiberados,
                       time, formasPagamento, horarioFuncionamento, opcoes
 ```
 
@@ -40,6 +41,11 @@ GET /api/bootstrap -> usuario, tenant, assinatura, catalogoPermissoes,
 
 Cada lista só vem se o usuário tiver a permissão correspondente (`time.ver`,
 `financeiro.ver`, `horarios.ver`).
+
+`catalogoRecursos` traz o catálogo inteiro já resolvido contra o plano assinado — cada
+recurso com `incluso` e o `planoMinimo` que o libera — e `recursosLiberados` é só a lista
+de chaves inclusas. É com isso que o app decide o cadeado; ele não conhece a tabela de
+planos.
 
 ## Permissões exigidas por rota
 
@@ -75,7 +81,21 @@ Cada lista só vem se o usuário tiver a permissão correspondente (`time.ver`,
 | `GET /api/assinatura/**` | `assinatura.ver` |
 | `PUT /api/assinatura/assentos`, checkouts | `assinatura.alterar` |
 
-`GET /api/perfis/catalogo` e `GET /api/bootstrap` exigem só estar autenticado.
+`GET /api/perfis/catalogo`, `GET /api/bootstrap` e `GET /api/assinatura/recursos` exigem
+só estar autenticado.
+
+### Recursos exigidos por rota
+
+Permissão é o que o admin deu ao perfil; recurso é o que a empresa comprou. Um admin pode
+ter a permissão e ainda assim esbarrar no plano — aí a resposta é **402** com
+`code: RecursoForaDoPlano` e a mensagem já diz a partir de qual plano o recurso entra.
+
+| Rota | Recurso |
+|---|---|
+| `POST /api/time/membros` | `multi-usuario` |
+| `POST/PUT/DELETE /api/perfis` | `permissoes-avancadas` |
+| `PUT /api/horarios/staff/{usuarioId}` | `jornada-por-pessoa` |
+| `POST/DELETE /api/horarios/staff/ausencias` | `jornada-por-pessoa` |
 
 ## Agenda: disponibilidade
 
@@ -96,6 +116,7 @@ revalida isso antes de gravar: uma agenda desatualizada no app não cria conflit
 
 ```
 GET  /api/assinatura/planos
+GET  /api/assinatura/recursos
 GET  /api/assinatura/atual
 POST /api/assinatura/cotacao        { planoId, ciclo, assentos }
 PUT  /api/assinatura/assentos       { assentos }
@@ -109,3 +130,21 @@ Preços em **USD**. A cotação é a fonte da verdade:
 total mensal = preço do plano + max(0, assentos - usuáriosIncluídos) × US$ 10
 total anual  = preço do plano + max(0, assentos - usuáriosIncluídos) × US$ 120
 ```
+
+### Recursos por plano
+
+`GET /api/assinatura/planos` devolve, em cada plano, `recursos` (as chaves inclusas) e
+`catalogo` (o catálogo inteiro marcado item a item). `GET /api/assinatura/recursos` faz o
+mesmo para o plano atual, já agrupado, que é o formato da tela de assinatura.
+
+Os degraus acumulam — cada plano tem tudo do anterior:
+
+| Degrau | Plano | Recursos |
+|---|---|---|
+| 1 | Basic | agendamentos, clientes, catálogo, vendas, página de agendamento online, lembrete por e-mail |
+| 2 | Platinum | + vários usuários no time, jornada por pessoa, política de cancelamento, cartão em arquivo, lembretes por SMS e WhatsApp, Google Calendar, agendamento recorrente, sem a marca da plataforma |
+| 3 | Ultimate | + relatórios avançados, comissões, várias unidades, permissões avançadas por perfil, salas e equipamentos |
+| 4 | Custom | + onboarding dedicado, API pública, gerente de conta |
+
+A fonte é `CatalogoRecursos` no domínio; `planos.recursos` guarda as chaves e a migração
+`RecursosPorPlano` traz os planos já gravados para elas.

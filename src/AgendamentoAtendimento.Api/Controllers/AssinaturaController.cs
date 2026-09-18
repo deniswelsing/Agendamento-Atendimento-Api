@@ -4,6 +4,7 @@ using AgendamentoAtendimento.Api.Contratos;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -34,7 +35,35 @@ public class AssinaturaController : ControllerBaseApi
         var planos = await _db.Planos
             .AsNoTracking().Where(p => p.Ativo).OrderBy(p => p.Ordem).ToListAsync(ct);
 
-        return Ok(planos.Select(p => p.ParaDto()).ToList());
+        // Cada plano já sai com o catálogo inteiro resolvido: o app mostra a mesma lista de
+        // recursos em todos e só varia o visto e o cadeado.
+        return Ok(planos.Select(p => p.ParaDto(planos)).ToList());
+    }
+
+    /// <summary>
+    /// Recursos do catálogo resolvidos contra o plano atual: o que está incluso, o que está
+    /// no cadeado e a partir de qual plano cada coisa entra.
+    /// </summary>
+    [HttpGet("recursos")]
+    [Authorize]
+    public async Task<ActionResult<IReadOnlyList<GrupoRecursosDto>>> Recursos(CancellationToken ct)
+    {
+        var planos = await _db.Planos
+            .AsNoTracking().Where(p => p.Ativo).OrderBy(p => p.Ordem).ToListAsync(ct);
+
+        var assinatura = await _assinaturas.ObterAtualAsync(ct);
+        var plano = assinatura?.Plano ?? planos.FirstOrDefault();
+        if (plano is null)
+        {
+            return Ok(new List<GrupoRecursosDto>());
+        }
+
+        var grupos = Mapeamentos.CatalogoPara(plano, planos)
+            .GroupBy(r => r.Grupo)
+            .Select(g => new GrupoRecursosDto(g.Key, g.ToList()))
+            .ToList();
+
+        return Ok(grupos);
     }
 
     [HttpGet("atual")]
@@ -46,7 +75,8 @@ public class AssinaturaController : ControllerBaseApi
             "Esta empresa ainda não tem assinatura.");
 
         var emUso = await _assinaturas.AssentosEmUsoAsync(ct);
-        return Ok(assinatura.ParaDto(emUso));
+        var planos = await PlanosAtivosAsync(ct);
+        return Ok(assinatura.ParaDto(emUso, planos));
     }
 
     /// <summary>
@@ -166,7 +196,7 @@ public class AssinaturaController : ControllerBaseApi
 
         var recarregada = await _assinaturas.ObterAtualAsync(ct);
         var emUso = await _assinaturas.AssentosEmUsoAsync(ct);
-        return Ok(recarregada!.ParaDto(emUso));
+        return Ok(recarregada!.ParaDto(emUso, await PlanosAtivosAsync(ct)));
     }
 
     [HttpPut("assentos")]
@@ -183,8 +213,11 @@ public class AssinaturaController : ControllerBaseApi
         }
 
         var emUso = await _assinaturas.AssentosEmUsoAsync(ct);
-        return Ok(assinatura.ParaDto(emUso));
+        return Ok(assinatura.ParaDto(emUso, await PlanosAtivosAsync(ct)));
     }
+
+    private Task<List<Plano>> PlanosAtivosAsync(CancellationToken ct) =>
+        _db.Planos.AsNoTracking().Where(p => p.Ativo).OrderBy(p => p.Ordem).ToListAsync(ct);
 
     /// <summary>
     /// Chamada real ao Paddle. Fica isolada para que o resto do fluxo seja testável sem

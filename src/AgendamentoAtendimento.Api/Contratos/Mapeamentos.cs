@@ -139,16 +139,34 @@ public static class Mapeamentos
         m.Acoes.Select(a => new AcaoPermissaoDto(
             a.Chave, a.ChaveCompleta(m.Chave), a.Nome, a.Destrutiva)).ToList());
 
-    public static PlanoDto ParaDto(this Plano p) => new(
+    /// <summary>
+    /// O catálogo inteiro resolvido contra um plano: cada recurso sai marcado como incluso
+    /// ou não, com o nome do menor plano que o libera. É o que a tela de planos desenha —
+    /// o app não conhece nenhum recurso por conta própria.
+    /// </summary>
+    public static IReadOnlyList<RecursoDto> CatalogoPara(Plano plano, IEnumerable<Plano> todos)
+    {
+        var inclusos = plano.ChavesDeRecurso()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var lista = todos.ToList();
+
+        return CatalogoRecursos.Todos.Select(r => new RecursoDto(
+            r.Chave, r.Nome, r.Grupo, r.Descricao,
+            inclusos.Contains(r.Chave), r.NivelMinimo,
+            CatalogoRecursos.MenorPlanoQueLibera(r.Chave, lista)?.Nome)).ToList();
+    }
+
+    public static PlanoDto ParaDto(this Plano p, IEnumerable<Plano>? todos = null) => new(
         p.Id, p.Codigo, p.Nome, p.Descricao, p.PrecoMensalUsd, p.PrecoAnualUsd,
         p.UsuariosIncluidos, p.LimiteUsuarios, p.Ordem, p.IsCustom,
-        (p.Recursos ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries
-            | StringSplitOptions.TrimEntries),
+        p.ChavesDeRecurso(),
+        CatalogoPara(p, todos ?? new[] { p }),
         p.PaddlePriceIdMensal, p.PaddlePriceIdAnual, p.PlayProductId,
         p.PlayBasePlanIdMensal, p.PlayBasePlanIdAnual);
 
-    public static AssinaturaDto ParaDto(this Assinatura a, int assentosEmUso) => new(
-        a.Id, a.TenantId, a.Plano!.ParaDto(), a.Ciclo, a.Gateway, a.Status,
+    public static AssinaturaDto ParaDto(
+        this Assinatura a, int assentosEmUso, IEnumerable<Plano>? planos = null) => new(
+        a.Id, a.TenantId, a.Plano!.ParaDto(planos), a.Ciclo, a.Gateway, a.Status,
         a.AssentosContratados, assentosEmUso,
         Math.Max(0, a.AssentosContratados - assentosEmUso),
         a.InicioCicloAtual, a.FimCicloAtual, a.ProximaCobranca, a.ValorUltimaCobrancaUsd,

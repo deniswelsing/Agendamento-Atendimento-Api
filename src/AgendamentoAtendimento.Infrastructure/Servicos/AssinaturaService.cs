@@ -13,6 +13,7 @@ public enum MotivoRecusa
     ProdutoNaoCoberto,
     SemAssentoLivre,
     AcimaDoLimiteDoPlano,
+    RecursoForaDoPlano,
 }
 
 public sealed record ResultadoAssinatura(bool Ok, MotivoRecusa Motivo, string? Mensagem = null)
@@ -93,6 +94,52 @@ public class AssinaturaService
         return new ResultadoAssinatura(false, MotivoRecusa.SemAssentoLivre,
             $"Todos os {assinatura.AssentosContratados} assentos estão ocupados. " +
             $"Cada usuário adicional custa US$ {preco:0.00} por {periodo}.");
+    }
+
+    /// <summary>
+    /// Recursos liberados para o tenant. Sem assinatura, vale o menor plano ativo: é o que
+    /// o app mostra enquanto a empresa ainda não contratou.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> RecursosLiberadosAsync(CancellationToken ct = default)
+    {
+        var assinatura = await ObterAtualAsync(ct);
+        var plano = assinatura?.Plano
+            ?? await _db.Planos.AsNoTracking()
+                .Where(p => p.Ativo).OrderBy(p => p.Ordem).FirstOrDefaultAsync(ct);
+
+        return plano?.ChavesDeRecurso() ?? Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// O plano do tenant libera este recurso? Quando não libera, a mensagem já diz em qual
+    /// plano ele entra — é o texto que o app exibe no cadeado.
+    /// </summary>
+    public async Task<ResultadoAssinatura> VerificarRecursoAsync(
+        string chave, CancellationToken ct = default)
+    {
+        var recurso = CatalogoRecursos.Obter(chave);
+        if (recurso is null)
+        {
+            // Recurso desconhecido não bloqueia: quem decide o catálogo é o servidor.
+            return ResultadoAssinatura.Sucesso;
+        }
+
+        var liberados = await RecursosLiberadosAsync(ct);
+        if (liberados.Any(c => string.Equals(c, recurso.Chave, StringComparison.OrdinalIgnoreCase)))
+        {
+            return ResultadoAssinatura.Sucesso;
+        }
+
+        var planos = await _db.Planos.AsNoTracking().Where(p => p.Ativo).OrderBy(p => p.Ordem)
+            .ToListAsync(ct);
+        var minimo = CatalogoRecursos.MenorPlanoQueLibera(recurso.Chave, planos);
+
+        var onde = minimo is null
+            ? "Fale com a gente para liberar este recurso."
+            : $"Está disponível a partir do plano {minimo.Nome}.";
+
+        return new ResultadoAssinatura(false, MotivoRecusa.RecursoForaDoPlano,
+            $"{recurso.Nome} não faz parte do plano atual. {onde}");
     }
 
     /// <summary>Cotação oficial. O app exibe exatamente estes números.</summary>

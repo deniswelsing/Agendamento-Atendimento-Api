@@ -57,6 +57,15 @@ public class BootstrapController : ControllerBaseApi
         var assinatura = await _assinaturas.ObterAtualAsync(ct);
         var assentosEmUso = await _assinaturas.AssentosEmUsoAsync(ct);
 
+        // Recursos: o que a empresa comprou. O app usa isto para desenhar o cadeado e
+        // dizer em qual plano cada coisa entra, sem conhecer a tabela de planos.
+        var planos = await _db.Planos.AsNoTracking()
+            .Where(p => p.Ativo).OrderBy(p => p.Ordem).ToListAsync(ct);
+        var planoAtual = assinatura?.Plano ?? planos.FirstOrDefault();
+        var catalogoRecursos = planoAtual is null
+            ? new List<RecursoDto>()
+            : Mapeamentos.CatalogoPara(planoAtual, planos);
+
         var podeVerTime = Permissoes.Permite(permissoes, "time.ver");
         var podeVerFinanceiro = Permissoes.Permite(permissoes, "financeiro.ver");
         var podeVerHorarios = Permissoes.Permite(permissoes, "horarios.ver");
@@ -84,8 +93,10 @@ public class BootstrapController : ControllerBaseApi
             Tenant: new TenantDto(
                 tenant.Id, tenant.Slug, tenant.NomeEmpresa, tenant.Moeda,
                 tenant.FusoHorario, tenant.IdiomaPadrao),
-            Assinatura: assinatura?.ParaDto(assentosEmUso),
+            Assinatura: assinatura?.ParaDto(assentosEmUso, planos),
             CatalogoPermissoes: Permissoes.Modulos.Select(m => m.ParaDto()).ToList(),
+            CatalogoRecursos: catalogoRecursos,
+            RecursosLiberados: planoAtual?.ChavesDeRecurso() ?? new List<string>(),
             Time: time.Select(u => u.ParaDto()).ToList(),
             FormasPagamento: formas.Select(f => f.ParaDto()).ToList(),
             HorarioFuncionamento: horarios.Select(h => h.ParaDto()).ToList(),

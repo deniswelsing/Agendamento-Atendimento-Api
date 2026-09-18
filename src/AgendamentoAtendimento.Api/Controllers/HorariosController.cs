@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
+using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using Microsoft.AspNetCore.Mvc;
@@ -149,6 +150,7 @@ public class HorariosController : ControllerBaseApi
     /// <summary>Grava a semana inteira de uma pessoa do time.</summary>
     [HttpPut("staff/{usuarioId:long}")]
     [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.JornadaPorPessoa)]
     public async Task<ActionResult<IReadOnlyList<HorarioStaffDto>>> SalvarStaff(
         long usuarioId, IReadOnlyList<HorarioStaffRequest> req, CancellationToken ct)
     {
@@ -213,6 +215,7 @@ public class HorariosController : ControllerBaseApi
 
     [HttpPost("staff/ausencias")]
     [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.JornadaPorPessoa)]
     public async Task<ActionResult<AusenciaStaffDto>> CriarAusencia(
         AusenciaStaffRequest req, CancellationToken ct)
     {
@@ -245,6 +248,7 @@ public class HorariosController : ControllerBaseApi
 
     [HttpDelete("staff/ausencias/{id:long}")]
     [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.JornadaPorPessoa)]
     public async Task<IActionResult> RemoverAusencia(long id, CancellationToken ct)
     {
         var ausencia = NaoNulo(

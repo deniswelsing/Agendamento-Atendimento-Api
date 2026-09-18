@@ -44,7 +44,7 @@ public static class DadosIniciais
                 Descricao = "Para começar, com o essencial",
                 PrecoMensalUsd = 0m, PrecoAnualUsd = 0m,
                 UsuariosIncluidos = 1, LimiteUsuarios = 1,
-                Recursos = "agenda,clientes,catalogo,vendas",
+                Recursos = CatalogoRecursos.ListaAteNivel(1),
             },
             new Plano
             {
@@ -52,7 +52,7 @@ public static class DadosIniciais
                 Descricao = "Para operações em crescimento",
                 PrecoMensalUsd = 99m, PrecoAnualUsd = 948m,
                 UsuariosIncluidos = 5, LimiteUsuarios = 25,
-                Recursos = "agenda,clientes,catalogo,vendas,financeiro,time,horarios,relatorios",
+                Recursos = CatalogoRecursos.ListaAteNivel(2),
                 PaddlePriceIdMensal = "pri_platinum_mensal", PaddlePriceIdAnual = "pri_platinum_anual",
                 PlayProductId = "plano_platinum",
                 PlayBasePlanIdMensal = "mensal", PlayBasePlanIdAnual = "anual",
@@ -63,7 +63,7 @@ public static class DadosIniciais
                 Descricao = "Para negócios estabelecidos",
                 PrecoMensalUsd = 199m, PrecoAnualUsd = 1908m,
                 UsuariosIncluidos = 15, LimiteUsuarios = null,
-                Recursos = "agenda,clientes,catalogo,vendas,financeiro,time,horarios,relatorios,multiunidade,api",
+                Recursos = CatalogoRecursos.ListaAteNivel(3),
                 PaddlePriceIdMensal = "pri_ultimate_mensal", PaddlePriceIdAnual = "pri_ultimate_anual",
                 PlayProductId = "plano_ultimate",
                 PlayBasePlanIdMensal = "mensal", PlayBasePlanIdAnual = "anual",
@@ -74,7 +74,7 @@ public static class DadosIniciais
                 Descricao = "Sob consulta, com gerente dedicado",
                 PrecoMensalUsd = null, PrecoAnualUsd = null,
                 UsuariosIncluidos = 15, LimiteUsuarios = null, IsCustom = true,
-                Recursos = "tudo",
+                Recursos = CatalogoRecursos.ListaAteNivel(4),
             });
 
         await db.SaveChangesAsync(ct);
