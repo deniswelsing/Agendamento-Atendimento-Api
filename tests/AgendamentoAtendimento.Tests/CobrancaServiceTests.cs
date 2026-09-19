@@ -268,3 +268,80 @@ public class CobrancaServiceTests : IAsyncLifetime
         Assert.Equal(MeioDeCaptura.PixQr, (await _db.Pagamentos.SingleAsync()).Meio);
     }
 }
+
+/// <summary>
+/// A comissão é promessa de dinheiro para quem atendeu. O que se testa aqui é que ela
+/// sai do que foi realmente vendido, e não do catálogo de hoje.
+/// </summary>
+public class ComissaoTests
+{
+    private static VendaItem Item(decimal preco, decimal qtd, decimal desconto, decimal comissao) =>
+        new()
+        {
+            Nome = "Serviço",
+            Quantidade = qtd,
+            PrecoUnitario = preco,
+            DescontoValor = desconto,
+            ComissaoPercentual = comissao,
+        };
+
+    [Fact]
+    public void A_comissao_sai_do_liquido_do_item()
+    {
+        var item = Item(preco: 320m, qtd: 1m, desconto: 0m, comissao: 10m);
+
+        Assert.Equal(32.00m, item.ComissaoValor);
+    }
+
+    [Fact]
+    public void Desconto_dado_reduz_a_comissao()
+    {
+        // Quem deu 20 de desconto não comissiona sobre os 20.
+        var item = Item(preco: 320m, qtd: 1m, desconto: 20m, comissao: 10m);
+
+        Assert.Equal(300m, item.TotalLiquido);
+        Assert.Equal(30.00m, item.ComissaoValor);
+    }
+
+    [Fact]
+    public void Quantidade_multiplica_a_comissao()
+    {
+        var item = Item(preco: 100m, qtd: 3m, desconto: 0m, comissao: 12m);
+
+        Assert.Equal(36.00m, item.ComissaoValor);
+    }
+
+    [Fact]
+    public void Item_sem_comissao_nao_gera_nada()
+    {
+        Assert.Equal(0m, Item(preco: 500m, qtd: 1m, desconto: 0m, comissao: 0m).ComissaoValor);
+    }
+
+    [Fact]
+    public void Sem_vendedor_a_venda_nao_tem_comissao()
+    {
+        // Comissão sem alguém para receber é número solto.
+        var venda = new Venda { ClienteId = 1, VendedorId = null };
+        venda.Itens.Add(Item(preco: 320m, qtd: 1m, desconto: 0m, comissao: 10m));
+
+        Assert.Equal(0m, venda.TotalComissao);
+    }
+
+    [Fact]
+    public void Com_vendedor_a_venda_soma_os_itens()
+    {
+        var venda = new Venda { ClienteId = 1, VendedorId = 7 };
+        venda.Itens.Add(Item(preco: 320m, qtd: 1m, desconto: 0m, comissao: 10m));
+        venda.Itens.Add(Item(preco: 890m, qtd: 1m, desconto: 0m, comissao: 12m));
+
+        Assert.Equal(138.80m, venda.TotalComissao);
+    }
+
+    [Fact]
+    public void A_comissao_arredonda_para_centavos()
+    {
+        var item = Item(preco: 333.33m, qtd: 1m, desconto: 0m, comissao: 7.5m);
+
+        Assert.Equal(25.00m, item.ComissaoValor);
+    }
+}

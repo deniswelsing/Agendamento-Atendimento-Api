@@ -2,6 +2,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.Common;
+using AgendamentoAtendimento.Domain.Usuarios;
 
 namespace AgendamentoAtendimento.Domain.Vendas;
 
@@ -33,6 +34,13 @@ public class Venda : EntidadeDeTenant
     public decimal TotalPago { get; set; }
     public decimal TotalEstornado { get; set; }
 
+    /// <summary>
+    /// Quem leva a comissão. Numa venda que veio de atendimento, é quem atendeu; num
+    /// balcão, quem vendeu. Nulo quando ninguém é creditado.
+    /// </summary>
+    public long? VendedorId { get; set; }
+    public Usuario? Vendedor { get; set; }
+
     public string? Observacao { get; set; }
     public DateTimeOffset? FinalizadaEm { get; set; }
     public DateTimeOffset? CanceladaEm { get; set; }
@@ -41,6 +49,14 @@ public class Venda : EntidadeDeTenant
     public ICollection<Pagamento> Pagamentos { get; set; } = new List<Pagamento>();
 
     public decimal SaldoAberto => Math.Max(0m, TotalLiquido - TotalPago);
+
+    /// <summary>
+    /// O que a venda gera de comissão. Só faz sentido com vendedor: comissão sem alguém
+    /// para receber é número solto.
+    /// </summary>
+    public decimal TotalComissao => VendedorId is null
+        ? 0m
+        : decimal.Round(Itens.Sum(i => i.ComissaoValor), 2, MidpointRounding.AwayFromZero);
 }
 
 public class VendaItem : EntidadeDeTenant
@@ -61,8 +77,19 @@ public class VendaItem : EntidadeDeTenant
     public decimal DescontoValor { get; set; }
     public decimal TaxaPercentual { get; set; }
 
+    /// <summary>
+    /// Percentual de comissão congelado no momento da venda, copiado do item do catálogo.
+    /// Congelar importa: mudar a comissão do catálogo amanhã não pode alterar o que já
+    /// foi vendido e prometido a quem atendeu.
+    /// </summary>
+    public decimal ComissaoPercentual { get; set; }
+
     public decimal TotalBruto => decimal.Round(PrecoUnitario * Quantidade, 2, MidpointRounding.AwayFromZero);
 
     public decimal TotalLiquido =>
         decimal.Round(Math.Max(0m, TotalBruto - DescontoValor), 2, MidpointRounding.AwayFromZero);
+
+    /// <summary>Comissão deste item, sobre o líquido — desconto dado reduz a comissão.</summary>
+    public decimal ComissaoValor =>
+        decimal.Round(TotalLiquido * ComissaoPercentual / 100m, 2, MidpointRounding.AwayFromZero);
 }

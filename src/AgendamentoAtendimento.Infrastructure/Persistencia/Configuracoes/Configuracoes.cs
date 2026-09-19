@@ -205,6 +205,9 @@ public class VendaConfig : IEntityTypeConfiguration<Venda>
     {
         b.Property(v => v.Observacao).HasMaxLength(1000);
         b.Ignore(v => v.SaldoAberto);
+        b.Ignore(v => v.TotalComissao);
+        b.HasOne(v => v.Vendedor).WithMany().HasForeignKey(v => v.VendedorId)
+            .OnDelete(DeleteBehavior.SetNull);
         b.HasOne(v => v.Cliente).WithMany().HasForeignKey(v => v.ClienteId)
             .OnDelete(DeleteBehavior.Restrict);
         b.HasOne(v => v.Agendamento).WithMany().HasForeignKey(v => v.AgendamentoId)
@@ -226,6 +229,7 @@ public class VendaItemConfig : IEntityTypeConfiguration<VendaItem>
         b.Property(i => i.Quantidade).HasColumnType("numeric(18,3)");
         b.Ignore(i => i.TotalBruto);
         b.Ignore(i => i.TotalLiquido);
+        b.Ignore(i => i.ComissaoValor);
         b.HasOne(i => i.ItemCatalogo).WithMany().HasForeignKey(i => i.ItemCatalogoId)
             .OnDelete(DeleteBehavior.Restrict);
     }

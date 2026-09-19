@@ -108,6 +108,23 @@ ATENDIMENTO_JA_FATURADO`.
 É o caminho que o botão **Finalizar e cobrar** da agenda usa: conclui o atendimento, cria
 a venda com os serviços agendados e abre o recebimento.
 
+### Comissão
+
+`VendaItem` guarda `comissaoPercentual` **congelado no momento da venda**, copiado do item
+do catálogo. Congelar importa: mexer na comissão do catálogo amanhã não pode mudar o que
+já foi vendido e prometido a quem atendeu.
+
+`comissaoValor` sai do **líquido** do item, então desconto dado reduz a comissão de quem
+deu. `Venda.totalComissao` soma os itens, e é **zero sem vendedor** — comissão sem alguém
+para receber é número solto.
+
+`Venda.vendedorId` é quem leva. Numa venda que nasce de atendimento ele já vem preenchido
+com o responsável do agendamento; `POST /api/vendas` aceita `vendedorId` para mandar outro.
+
+As vendas anteriores a esta mudança ficaram com comissão zero e sem vendedor, de
+propósito: copiar o percentual atual do catálogo inventaria uma comissão que ninguém
+acordou na época.
+
 ## Cobrança: maquininha, Pix e gateway
 
 ```

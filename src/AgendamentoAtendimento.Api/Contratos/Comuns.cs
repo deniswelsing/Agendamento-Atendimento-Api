@@ -78,7 +78,9 @@ public sealed record DiaDaAgendaDto(
 // ------------------------------------------------------------------------ vendas
 public sealed record VendaItemDto(
     long VendaItemId, long ItemId, TipoItem Tipo, string Nome, decimal Quantidade,
-    decimal PrecoUnitario, decimal DescontoValor, decimal TotalLiquido);
+    decimal PrecoUnitario, decimal DescontoValor, decimal TotalLiquido,
+    /// <summary>Congelado na venda: mudar o catálogo depois não mexe no que já foi vendido.</summary>
+    decimal ComissaoPercentual, decimal ComissaoValor);
 
 public sealed record PagamentoDto(
     long PagamentoId, long FormaPagamentoId, string FormaPagamentoNome, StatusPagamento Status,
@@ -96,13 +98,17 @@ public sealed record VendaDto(
     long VendaId, long ClienteId, string ClienteNome, StatusVenda Status,
     DateTimeOffset CriadaEm, long? AgendamentoId, decimal TotalBruto, decimal TotalDescontos,
     decimal DescontoGeral, decimal TotalLiquido, decimal TotalPago, decimal SaldoAberto,
-    string? Observacao, IReadOnlyList<VendaItemDto> Itens, IReadOnlyList<PagamentoDto> Pagamentos);
+    string? Observacao, IReadOnlyList<VendaItemDto> Itens, IReadOnlyList<PagamentoDto> Pagamentos,
+    /// <summary>Quem leva a comissão desta venda.</summary>
+    long? VendedorId, string? VendedorNome, decimal TotalComissao);
 
 public sealed record VendaItemRequest(long ItemId, decimal Quantidade, decimal? PrecoUnitario, decimal DescontoValor = 0);
 
 public sealed record VendaRequest(
     long ClienteId, IReadOnlyList<VendaItemRequest> Itens, long? AgendamentoId,
-    decimal DescontoGeral = 0, string? Observacao = null);
+    decimal DescontoGeral = 0, string? Observacao = null,
+    /// <summary>Quem leva a comissão. Nulo herda o atendente do agendamento.</summary>
+    long? VendedorId = null);
 
 public sealed record PagamentoRequest(long FormaPagamentoId, decimal Valor, int Parcelas = 1, string? Autorizacao = null);
 

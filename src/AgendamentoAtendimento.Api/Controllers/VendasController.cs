@@ -41,6 +41,7 @@ public class VendasController : ControllerBaseApi
         var consulta = _db.Vendas
             .AsNoTracking()
             .Include(v => v.Cliente)
+            .Include(v => v.Vendedor)
             .Include(v => v.Itens)
             .Include(v => v.Pagamentos).ThenInclude(x => x.FormaPagamento)
             .AsQueryable();
@@ -100,7 +101,14 @@ public class VendasController : ControllerBaseApi
 
         var agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
 
-        var venda = new Venda { ClienteId = cliente.Id, AgendamentoId = req.AgendamentoId };
+        var venda = new Venda
+        {
+            ClienteId = cliente.Id,
+            AgendamentoId = req.AgendamentoId,
+            // Numa venda que nasce de atendimento, quem atendeu leva a comissão — a menos
+            // que o app diga outra coisa.
+            VendedorId = req.VendedorId ?? agendamento?.ResponsavelId,
+        };
         await PreencherItensAsync(venda, req, ct);
 
         _db.Vendas.Add(venda);
@@ -152,6 +160,7 @@ public class VendasController : ControllerBaseApi
 
         venda.ClienteId = req.ClienteId;
         venda.AgendamentoId = req.AgendamentoId;
+        venda.VendedorId = req.VendedorId ?? venda.VendedorId;
         venda.Itens.Clear();
         await PreencherItensAsync(venda, req, ct);
 
@@ -305,6 +314,9 @@ public class VendasController : ControllerBaseApi
                 PrecoUnitario = pedido.PrecoUnitario ?? item.Preco,
                 DescontoValor = pedido.DescontoValor,
                 TaxaPercentual = item.TaxaPercentual,
+                // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
+                // foi vendido nem o que foi prometido a quem atendeu.
+                ComissaoPercentual = item.ComissaoPercentual,
             });
         }
 
@@ -316,6 +328,7 @@ public class VendasController : ControllerBaseApi
     private Task<Venda?> CarregarAsync(long id, CancellationToken ct) =>
         _db.Vendas
             .Include(v => v.Cliente)
+            .Include(v => v.Vendedor)
             .Include(v => v.Itens)
             .Include(v => v.Pagamentos).ThenInclude(p => p.FormaPagamento)
             .FirstOrDefaultAsync(v => v.Id == id, ct);

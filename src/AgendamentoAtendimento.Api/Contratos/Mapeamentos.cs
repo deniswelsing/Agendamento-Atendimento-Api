@@ -94,8 +94,9 @@ public static class Mapeamentos
         v.TotalPago, v.SaldoAberto, v.Observacao,
         v.Itens.Select(i => new VendaItemDto(
             i.Id, i.ItemCatalogoId, i.Tipo, i.Nome, i.Quantidade, i.PrecoUnitario,
-            i.DescontoValor, i.TotalLiquido)).ToList(),
-        v.Pagamentos.Select(p => p.ParaDto()).ToList());
+            i.DescontoValor, i.TotalLiquido, i.ComissaoPercentual, i.ComissaoValor)).ToList(),
+        v.Pagamentos.Select(p => p.ParaDto()).ToList(),
+        v.VendedorId, v.Vendedor?.Nome, v.TotalComissao);
 
     public static PagamentoDto ParaDto(this Pagamento p) => new(
         p.Id, p.FormaPagamentoId, p.FormaPagamento?.Nome ?? string.Empty, p.Status,
