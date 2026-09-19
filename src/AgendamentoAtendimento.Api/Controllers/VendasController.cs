@@ -2,6 +2,7 @@ using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
 using AgendamentoAtendimento.Domain.Catalogo;
+using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
@@ -97,11 +98,21 @@ public class VendasController : ControllerBaseApi
             await _db.Clientes.FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
             "Cliente não encontrado.");
 
+        var agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
+
         var venda = new Venda { ClienteId = cliente.Id, AgendamentoId = req.AgendamentoId };
         await PreencherItensAsync(venda, req, ct);
 
         _db.Vendas.Add(venda);
         await _db.SaveChangesAsync(ct);
+
+        // Sem esta volta, o atendimento não sabe que já virou venda e o app oferece
+        // faturar de novo — o mesmo serviço cobrado duas vezes.
+        if (agendamento is not null)
+        {
+            agendamento.VendaId = venda.Id;
+            await _db.SaveChangesAsync(ct);
+        }
 
         var completa = await CarregarAsync(venda.Id, ct);
         return CreatedAtAction(nameof(Obter), new { id = venda.Id }, completa!.ParaDto());
@@ -120,6 +131,23 @@ public class VendasController : ControllerBaseApi
         {
             throw new RegraDeNegocioException(
                 "Venda paga ou cancelada não pode ser alterada.", "STATUS_FINAL");
+        }
+
+        // Trocar o agendamento da venda solta o antigo e prende o novo. O antigo é
+        // carregado sem a checagem de "já faturado": quem o faturou foi esta venda.
+        if (venda.AgendamentoId != req.AgendamentoId)
+        {
+            var anterior = await BuscarAgendamentoAsync(venda.AgendamentoId, ct);
+            if (anterior is not null && anterior.VendaId == venda.Id)
+            {
+                anterior.VendaId = null;
+            }
+
+            var novoAgendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
+            if (novoAgendamento is not null)
+            {
+                novoAgendamento.VendaId = venda.Id;
+            }
         }
 
         venda.ClienteId = req.ClienteId;
@@ -207,6 +235,41 @@ public class VendasController : ControllerBaseApi
         venda.CanceladaEm = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// O agendamento que esta venda fatura. Recusa um que já tenha outra venda: dois
+    /// lançamentos para o mesmo atendimento é cobrança em dobro.
+    /// </summary>
+    private async Task<Agendamento?> CarregarAgendamentoDaVendaAsync(
+        long? agendamentoId, CancellationToken ct)
+    {
+        var agendamento = await BuscarAgendamentoAsync(agendamentoId, ct);
+        if (agendamento is null)
+        {
+            return null;
+        }
+
+        if (agendamento.VendaId is { } jaFaturado)
+        {
+            throw new RegraDeNegocioException(
+                $"Este atendimento já gerou a venda {jaFaturado}.", "ATENDIMENTO_JA_FATURADO");
+        }
+
+        return agendamento;
+    }
+
+    private async Task<Agendamento?> BuscarAgendamentoAsync(
+        long? agendamentoId, CancellationToken ct)
+    {
+        if (agendamentoId is not { } id)
+        {
+            return null;
+        }
+
+        return NaoNulo(
+            await _db.Agendamentos.FirstOrDefaultAsync(a => a.Id == id, ct),
+            "Agendamento não encontrado.");
     }
 
     private async Task PreencherItensAsync(Venda venda, VendaRequest req, CancellationToken ct)

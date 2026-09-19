@@ -97,6 +97,17 @@ ter a permissão e ainda assim esbarrar no plano — aí a resposta é **402** c
 | `PUT /api/horarios/staff/{usuarioId}` | `jornada-por-pessoa` |
 | `POST/DELETE /api/horarios/staff/ausencias` | `jornada-por-pessoa` |
 
+## Do atendimento ao dinheiro
+
+`POST /api/vendas` com `agendamentoId` fatura um atendimento: cria a venda e **grava a
+volta** em `agendamentos.venda_id`. Sem essa volta o app não sabe que o atendimento já
+virou venda e oferece faturar de novo — o mesmo serviço cobrado duas vezes. Um segundo
+pedido para o mesmo atendimento é recusado com **400** e `code:
+ATENDIMENTO_JA_FATURADO`.
+
+É o caminho que o botão **Finalizar e cobrar** da agenda usa: conclui o atendimento, cria
+a venda com os serviços agendados e abre o recebimento.
+
 ## Cobrança: maquininha, Pix e gateway
 
 ```
