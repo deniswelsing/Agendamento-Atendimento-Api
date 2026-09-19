@@ -460,11 +460,14 @@ public class AgendamentosController : ControllerBaseApi
         foreach (var atribuicao in atribuicoes)
         {
             // Checagem direta, não pela grade: a grade só tem horários nas fronteiras do
-            // intervalo, e o segundo serviço começa quando o primeiro acaba.
+            // intervalo, e o segundo serviço começa quando o primeiro acaba. A janela do
+            // atendimento inteiro vai junto porque é ela que vale quando a empresa conta
+            // ocupação por funcionário.
             var pode = await _disponibilidade.PodePrestarAsync(
                 atribuicao.ResponsavelId,
                 atribuicao.ItemCatalogoId == 0 ? null : atribuicao.ItemCatalogoId,
-                atribuicao.Inicio, atribuicao.Fim, ignorarAgendamentoId, ct);
+                atribuicao.Inicio, atribuicao.Fim, ignorarAgendamentoId, ct,
+                atribuicoes[0].Inicio, atribuicoes[^1].Fim);
 
             if (!pode)
             {

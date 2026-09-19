@@ -31,6 +31,8 @@ public class TenantConfig : IEntityTypeConfiguration<Tenant>
         b.Property(t => t.FusoHorario).HasMaxLength(60).IsRequired();
         b.Property(t => t.IdiomaPadrao).HasMaxLength(10).IsRequired();
         b.Property(t => t.ReferenciaExterna).HasMaxLength(64);
+        // Inteiro, como os outros enums do esquema: o valor é estável e o nome não.
+        b.Property(t => t.ModoDeOcupacao).HasConversion<int>().IsRequired();
         b.HasIndex(t => t.Slug).IsUnique();
         b.HasIndex(t => t.ReferenciaExterna);
     }

@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
@@ -75,8 +76,44 @@ public sealed record DiaDaAgenda(
 public class DisponibilidadeService
 {
     private readonly AppDbContext _db;
+    private readonly IContextoAtual _contexto;
 
-    public DisponibilidadeService(AppDbContext db) => _db = db;
+    /// <summary>
+    /// Lido uma vez por requisição: o modo não muda no meio de um cálculo, e perguntar a
+    /// cada agendamento faria uma ida ao banco por linha da grade.
+    /// </summary>
+    private ModoDeOcupacao? _modo;
+
+    public DisponibilidadeService(AppDbContext db, IContextoAtual contexto)
+    {
+        _db = db;
+        _contexto = contexto;
+    }
+
+    /// <summary>Como esta empresa conta ocupação. Sem tenant no contexto, o padrão.</summary>
+    private async Task<ModoDeOcupacao> ModoAsync(CancellationToken ct)
+    {
+        if (_modo is { } jaLido)
+        {
+            return jaLido;
+        }
+
+        var tenantId = _contexto.TenantId;
+        if (tenantId is null)
+        {
+            return (_modo = ModoDeOcupacao.PorServico).Value;
+        }
+
+        // Tenant não é entidade de tenant: o filtro global não se aplica, então a busca é
+        // pelo id mesmo.
+        var modo = await _db.Tenants
+            .AsNoTracking()
+            .Where(t => t.Id == tenantId)
+            .Select(t => (ModoDeOcupacao?)t.ModoDeOcupacao)
+            .FirstOrDefaultAsync(ct);
+
+        return (_modo = modo ?? ModoDeOcupacao.PorServico).Value;
+    }
 
     public async Task<DiaDaAgenda> ObterDiaAsync(
         DateOnly data,
@@ -137,13 +174,13 @@ public class DisponibilidadeService
                 : atendentes);
         }
 
-        // Ocupação por pessoa: a união das janelas dos itens dela. Usar a janela inteira
-        // do agendamento tiraria da grade quem presta só o segundo serviço durante o
-        // primeiro — que é exatamente o caso que esta mudança existe para permitir.
+        // Ocupação por pessoa, no modo que a empresa escolheu: a união das janelas dos
+        // itens dela, ou o atendimento inteiro.
+        var modoDeOcupacao = await ModoAsync(ct);
         var ocupacao = new Dictionary<long, List<(DateTimeOffset Inicio, DateTimeOffset Fim)>>();
         foreach (var agendamento in agendamentosDoDia)
         {
-            foreach (var (usuarioId, ini, fimOcup) in agendamento.Ocupacoes())
+            foreach (var (usuarioId, ini, fimOcup) in agendamento.Ocupacoes(modoDeOcupacao))
             {
                 if (!ocupacao.TryGetValue(usuarioId, out var lista))
                 {
@@ -197,7 +234,7 @@ public class DisponibilidadeService
         for (var t = inicioDoDia; AdicionarMinutos(t, duracaoTotal) <= fechamento.Value;
              t = AdicionarMinutos(t, intervalo))
         {
-            var atribuicoes = MontarCadeia(sequencia, habilitados, t, data, PodeAtender);
+            var atribuicoes = MontarCadeia(sequencia, habilitados, t, data, PodeAtender, modoDeOcupacao);
             if (atribuicoes is null)
             {
                 continue;
@@ -231,24 +268,38 @@ public class DisponibilidadeService
     ///
     /// A escolha prefere quem já pegou o serviço anterior: o cliente não trocar de mãos
     /// sem necessidade é melhor atendimento, e não custa encaixe nenhum.
+    ///
+    /// Em <see cref="ModoDeOcupacao.PorFuncionario"/> o candidato precisa estar livre no
+    /// atendimento INTEIRO, não só na janela do serviço dele: nesse modo entrar no
+    /// atendimento prende a pessoa do começo ao fim, e checar só a própria janela deixaria
+    /// criar um agendamento que já nasce por cima de outro compromisso dela.
     /// </summary>
     private static List<AtribuicaoDeServico>? MontarCadeia(
         IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao)> sequencia,
         IReadOnlyList<List<Usuario>> habilitados,
         TimeOnly inicio,
         DateOnly data,
-        Func<Usuario, TimeOnly, TimeOnly, bool> podeAtender)
+        Func<Usuario, TimeOnly, TimeOnly, bool> podeAtender,
+        ModoDeOcupacao modo)
     {
         var atribuicoes = new List<AtribuicaoDeServico>(sequencia.Count);
         var cursor = inicio;
         Usuario? anterior = null;
+
+        var fimDoAtendimento = AdicionarMinutos(inicio, sequencia.Sum(e => e.Duracao));
 
         for (var i = 0; i < sequencia.Count; i++)
         {
             var etapa = sequencia[i];
             var fim = AdicionarMinutos(cursor, etapa.Duracao);
 
-            var candidatos = habilitados[i].Where(quem => podeAtender(quem, cursor, fim)).ToList();
+            var (deChecagem, ateChecagem) = modo == ModoDeOcupacao.PorFuncionario
+                ? (inicio, fimDoAtendimento)
+                : (cursor, fim);
+
+            var candidatos = habilitados[i]
+                .Where(quem => podeAtender(quem, deChecagem, ateChecagem))
+                .ToList();
             if (candidatos.Count == 0)
             {
                 return null;
@@ -303,8 +354,19 @@ public class DisponibilidadeService
         DateTimeOffset inicio,
         DateTimeOffset fim,
         long? ignorarAgendamentoId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        // A janela do atendimento inteiro. Em PorFuncionario é ela que vale: quem entra
+        // fica preso do começo ao fim, então checar só o próprio serviço aprovaria uma
+        // escolha que a grade nunca ofereceu.
+        DateTimeOffset? atendimentoInicio = null,
+        DateTimeOffset? atendimentoFim = null)
     {
+        if (await ModoAsync(ct) == ModoDeOcupacao.PorFuncionario)
+        {
+            inicio = atendimentoInicio ?? inicio;
+            fim = atendimentoFim ?? fim;
+        }
+
         var data = DateOnly.FromDateTime(inicio.UtcDateTime);
 
         var quem = await _db.Usuarios.AsNoTracking()
@@ -381,11 +443,13 @@ public class DisponibilidadeService
             }
         }
 
-        // Ocupação por serviço: quem presta só o segundo continua livre durante o primeiro.
+        // Mesma conta da grade, e pelo mesmo modo: checar aqui de um jeito e lá de outro
+        // deixaria a tela oferecer um encaixe que a criação depois recusa.
+        var modoDaChecagem = await ModoAsync(ct);
         var agendamentos = await AgendamentosDoDiaAsync(data, ct);
         return !agendamentos
             .Where(a => a.Id != (ignorarAgendamentoId ?? 0))
-            .SelectMany(a => a.Ocupacoes())
+            .SelectMany(a => a.Ocupacoes(modoDaChecagem))
             .Any(o => o.UsuarioId == usuarioId && inicio < o.Fim && fim > o.Inicio);
     }
 
@@ -481,8 +545,8 @@ public class DisponibilidadeService
         var fimDia = inicioDia.AddDays(1);
         return await _db.Agendamentos
             .AsNoTracking()
-            // Os itens vêm junto porque a ocupação é por serviço, não pelo agendamento
-            // inteiro: quem presta só o segundo serviço fica livre durante o primeiro.
+            // Os itens vêm junto porque a ocupação pode ser por serviço: aí quem presta
+            // só o segundo fica livre durante o primeiro.
             .Include(a => a.Itens)
             .Where(a => a.Inicio < fimDia && a.Fim > inicioDia && a.Status != StatusAgendamento.Cancelado)
             .ToListAsync(ct);

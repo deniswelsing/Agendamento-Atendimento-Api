@@ -20,6 +20,48 @@ public class HorariosController : ControllerBaseApi
 
     public HorariosController(AppDbContext db) => _db = db;
 
+    // ------------------------------------------------------------- modo de ocupação
+    /// <summary>
+    /// Como a agenda conta ocupação nesta empresa. Fica junto dos horários porque é da
+    /// mesma natureza: define o que a grade considera livre.
+    /// </summary>
+    [HttpGet("ocupacao")]
+    [RequerPermissao("horarios.ver")]
+    public async Task<ActionResult<ModoDeOcupacaoDto>> Ocupacao(CancellationToken ct)
+    {
+        var modo = await ModoDaEmpresaAsync(ct);
+        return Ok(ModoDeOcupacaoDto.De(modo));
+    }
+
+    [HttpPut("ocupacao")]
+    [RequerPermissao("horarios.editar")]
+    public async Task<ActionResult<ModoDeOcupacaoDto>> SalvarOcupacao(
+        ModoDeOcupacaoRequest req, CancellationToken ct)
+    {
+        if (!Enum.IsDefined(req.Modo))
+        {
+            throw new RegraDeNegocioException("Modo de ocupação desconhecido.", "MODO_INVALIDO");
+        }
+
+        var tenant = NaoNulo(
+            await _db.Tenants.FirstOrDefaultAsync(t => t.Id == TenantId, ct),
+            "Empresa não encontrada.");
+
+        tenant.ModoDeOcupacao = req.Modo;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ModoDeOcupacaoDto.De(tenant.ModoDeOcupacao));
+    }
+
+    private async Task<ModoDeOcupacao> ModoDaEmpresaAsync(CancellationToken ct) =>
+        await _db.Tenants
+            .AsNoTracking()
+            .Where(t => t.Id == TenantId)
+            .Select(t => t.ModoDeOcupacao)
+            .FirstOrDefaultAsync(ct) is var lido && Enum.IsDefined(lido)
+            ? lido
+            : ModoDeOcupacao.PorServico;
+
     // ------------------------------------------------------- funcionamento da empresa
     [HttpGet("funcionamento")]
     [RequerPermissao("horarios.ver")]

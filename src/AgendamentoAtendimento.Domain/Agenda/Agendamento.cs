@@ -21,6 +21,27 @@ public enum StatusAgendamento
     PendenteAprovacao = 7,
 }
 
+/// <summary>
+/// Como a agenda decide que alguém está ocupado. A escolha é da empresa porque as duas
+/// leituras são legítimas e nenhuma serve a todo mundo.
+/// </summary>
+public enum ModoDeOcupacao
+{
+    /// <summary>
+    /// O serviço é a unidade: cada pessoa fica ocupada só na janela do serviço que
+    /// presta. Quem presta apenas o segundo serviço continua livre durante o primeiro —
+    /// é o que abre encaixe em atendimento que passa por mais de uma pessoa.
+    /// </summary>
+    PorServico = 1,
+
+    /// <summary>
+    /// O funcionário é a unidade: quem entra no atendimento fica ocupado do começo ao
+    /// fim dele, inclusive nos serviços que não presta. Perde encaixe de propósito — é o
+    /// que vale onde a pessoa acompanha o cliente o atendimento inteiro.
+    /// </summary>
+    PorFuncionario = 2,
+}
+
 /// <summary>Agendamento de atendimento para um cliente (pessoa ou empresa).</summary>
 public class Agendamento : EntidadeDeTenant
 {
@@ -80,12 +101,37 @@ public class Agendamento : EntidadeDeTenant
     }
 
     /// <summary>
-    /// Quem está ocupado por causa deste agendamento, e quando. É isto — e não a janela
-    /// inteira — que tira alguém da grade: quem presta só o segundo serviço continua
-    /// livre durante o primeiro.
+    /// Quem está ocupado por causa deste agendamento, e quando.
+    ///
+    /// Em <see cref="ModoDeOcupacao.PorServico"/> é a janela do serviço — e não a do
+    /// atendimento — que tira alguém da grade: quem presta só o segundo serviço continua
+    /// livre durante o primeiro. Em <see cref="ModoDeOcupacao.PorFuncionario"/> todo
+    /// mundo que aparece no atendimento fica preso a ele do início ao fim.
     /// </summary>
-    public IEnumerable<(long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim)> Ocupacoes()
+    public IEnumerable<(long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim)> Ocupacoes(
+        ModoDeOcupacao modo = ModoDeOcupacao.PorServico)
     {
+        if (modo == ModoDeOcupacao.PorFuncionario)
+        {
+            // Cada pessoa uma vez só: repetir a mesma janela não muda o resultado e
+            // engorda a grade à toa.
+            var vistos = new HashSet<long>();
+            foreach (var item in Itens)
+            {
+                if ((item.ResponsavelId ?? ResponsavelId) is { } quem && vistos.Add(quem))
+                {
+                    yield return (quem, Inicio, Fim);
+                }
+            }
+
+            if (vistos.Count == 0 && ResponsavelId is { } unico)
+            {
+                yield return (unico, Inicio, Fim);
+            }
+
+            yield break;
+        }
+
         var alguem = false;
         foreach (var (item, inicio, fim) in Janelas())
         {

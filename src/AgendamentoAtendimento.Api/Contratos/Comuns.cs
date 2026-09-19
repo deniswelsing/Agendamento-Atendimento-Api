@@ -266,6 +266,29 @@ public sealed record ExecutoresDoServicoDto(
 public sealed record DefinirExecutoresRequest(IReadOnlyList<long> UsuariosIds);
 
 // ---------------------------------------------------------------------- horários
+/// <summary>
+/// O modo de ocupação da empresa, já com o texto que a tela mostra: quem decide isso é
+/// dono de empresa, não programador, e "PorServico" sozinho não explica a escolha.
+/// </summary>
+public sealed record ModoDeOcupacaoDto(ModoDeOcupacao Modo, string Rotulo, string Explicacao)
+{
+    public static ModoDeOcupacaoDto De(ModoDeOcupacao modo) => modo switch
+    {
+        ModoDeOcupacao.PorFuncionario => new(
+            modo,
+            "Por funcionário",
+            "Quem entra no atendimento fica ocupado do começo ao fim dele, mesmo nos "
+            + "serviços que não presta."),
+        _ => new(
+            ModoDeOcupacao.PorServico,
+            "Por serviço",
+            "Cada pessoa fica ocupada só na janela do serviço que presta. Abre mais "
+            + "encaixe quando o atendimento passa por mais de uma pessoa."),
+    };
+}
+
+public sealed record ModoDeOcupacaoRequest(ModoDeOcupacao Modo);
+
 public sealed record HorarioFuncionamentoDto(
     long HorarioId, DayOfWeek DiaDaSemana, bool Aberto, TimeOnly? Abertura, TimeOnly? Fechamento,
     TimeOnly? PausaInicio, TimeOnly? PausaFim, string TipoDia, int IntervaloSlotMinutos);
