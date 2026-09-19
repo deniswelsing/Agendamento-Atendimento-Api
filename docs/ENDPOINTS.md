@@ -72,6 +72,9 @@ planos.
 | `POST/PUT/DELETE /api/formas-pagamento` | `financeiro.formas` |
 | `GET /api/horarios/**` | `horarios.ver` |
 | `PUT/POST/DELETE /api/horarios/**` | `horarios.editar` |
+| `GET /api/pagina-online/**` | `pagina-online.ver` |
+| `PUT /api/pagina-online`, `PUT .../servicos/{id}` | `pagina-online.editar` |
+| `POST /api/pagina-online/pendentes/{id}/**` | `pagina-online.aprovar` |
 | `GET /api/time/membros` | `time.ver` |
 | `POST /api/time/membros` | `time.convidar` |
 | `PUT /api/time/membros/{id}` | `time.editar` |
@@ -82,7 +85,9 @@ planos.
 | `PUT /api/assinatura/assentos`, checkouts | `assinatura.alterar` |
 
 `GET /api/perfis/catalogo`, `GET /api/bootstrap` e `GET /api/assinatura/recursos` exigem
-só estar autenticado.
+só estar autenticado. `GET/POST/DELETE /api/publico/{slug}/**` é a única família de rotas
+que responde **sem token** — quem a protege é o slug, o plano do tenant e as regras da
+página, não a autenticação.
 
 ### Recursos exigidos por rota
 
@@ -94,6 +99,7 @@ ter a permissão e ainda assim esbarrar no plano — aí a resposta é **402** c
 |---|---|
 | `POST /api/time/membros` | `multi-usuario` |
 | `POST/PUT/DELETE /api/perfis` | `permissoes-avancadas` |
+| `PUT /api/pagina-online` | `pagina-online` |
 | `PUT /api/horarios/staff/{usuarioId}` | `jornada-por-pessoa` |
 | `POST/DELETE /api/horarios/staff/ausencias` | `jornada-por-pessoa` |
 
@@ -189,6 +195,48 @@ O cálculo é a interseção da janela da empresa com a jornada de cada atendent
 pausas dos dois, menos as ausências, menos o que já está agendado — e só entre quem presta
 o serviço pedido. `POST /api/agendamentos` revalida isso antes de gravar: uma agenda
 desatualizada no app não cria conflito.
+
+## Página de agendamento online
+
+O cliente marca sozinho, num endereço público, sem conta e sem token.
+
+```
+GET    /api/pagina-online                       -> configuração + url para compartilhar
+PUT    /api/pagina-online                       { ativa, slug, ... }
+GET    /api/pagina-online/slug-disponivel?slug=
+GET    /api/pagina-online/pendentes             -> AgendamentoDto[]
+POST   /api/pagina-online/pendentes/{id}/aprovar
+POST   /api/pagina-online/pendentes/{id}/recusar
+PUT    /api/pagina-online/servicos/{itemId}?visivel=
+```
+
+A porta aberta, sem `Authorization`:
+
+```
+GET    /api/publico/{slug}                          -> serviços, profissionais e a janela
+GET    /api/publico/{slug}/disponibilidade?data=&itensIds=
+POST   /api/publico/{slug}/agendamentos             -> { codigo, status, ... }
+GET    /api/publico/{slug}/agendamentos/{codigo}
+DELETE /api/publico/{slug}/agendamentos/{codigo}?motivo=
+```
+
+O tenant sai do **slug**, nunca do chamador: enquanto a página não é encontrada, nenhuma
+consulta enxerga dado de ninguém. Página desligada, inexistente ou fora do plano respondem
+**404 igual**, de propósito — quem desliga não quer que o endereço antigo continue
+confirmando que a empresa existe. O plano que vale é o da empresa dona da página.
+
+Serviço só aparece com `visivelOnline`; adivinhar o id não ajuda, porque o agendamento
+recusa o mesmo conjunto. A disponibilidade pública é a mesma do app, **inclusive quem
+presta o serviço**, menos o que a antecedência mínima já comeu.
+
+Não existe "meus agendamentos": o cliente recebe um código de 10 caracteres e é com ele —
+e só com ele — que consulta e desmarca.
+
+Com `exigeAprovacao`, o pedido nasce `PendenteAprovacao` e **já segura o horário**. Soltá-lo
+deixaria dois clientes pedirem o mesmo encaixe. Recusar é o que devolve o horário.
+
+Recusas: `AntecedenciaInsuficiente`, `ForaDaJanela`, `ServicoIndisponivel`,
+`HorarioIndisponivel`, `DadosIncompletos` (400) e `LimiteDiario` (**429**).
 
 ### Quem presta cada serviço
 
