@@ -160,7 +160,9 @@ public class VendasController : ControllerBaseApi
 
         venda.ClienteId = req.ClienteId;
         venda.AgendamentoId = req.AgendamentoId;
-        venda.VendedorId = req.VendedorId ?? venda.VendedorId;
+        // PUT troca a venda inteira: nulo aqui quer dizer "sem vendedor", e não "mantém".
+        // Sem isso o checkout nunca conseguiria tirar a comissão de alguém.
+        venda.VendedorId = req.VendedorId;
         venda.Itens.Clear();
         await PreencherItensAsync(venda, req, ct);
 
