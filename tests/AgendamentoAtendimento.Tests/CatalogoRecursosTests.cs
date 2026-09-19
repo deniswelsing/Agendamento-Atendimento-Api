@@ -107,6 +107,59 @@ public class CatalogoRecursosTests
     }
 
     /// <summary>
+    /// Um recurso marcado "em breve" é promessa, não entrega. Só o que já funciona pode
+    /// aparecer sem a marca — este teste fixa a lista do que está pronto, para que ninguém
+    /// marque como disponível algo que ainda não existe.
+    /// </summary>
+    [Fact]
+    public void So_o_que_ja_funciona_esta_marcado_como_disponivel()
+    {
+        var prontos = CatalogoRecursos.Todos
+            .Where(r => r.Disponivel).Select(r => r.Chave).OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(new[]
+        {
+            CatalogoRecursos.Agendamentos,
+            CatalogoRecursos.Catalogo,
+            CatalogoRecursos.Clientes,
+            CatalogoRecursos.GerenteDeConta,
+            CatalogoRecursos.JornadaPorPessoa,
+            CatalogoRecursos.MultiUsuario,
+            CatalogoRecursos.Onboarding,
+            CatalogoRecursos.PermissoesAvancadas,
+            CatalogoRecursos.Vendas,
+        }.OrderBy(c => c, StringComparer.Ordinal), prontos);
+    }
+
+    /// <summary>
+    /// Recusar com 402 um recurso que o sistema não entrega seria cobrar por uma porta que
+    /// não existe. Tudo que tem [RequerRecurso] precisa estar pronto.
+    /// </summary>
+    [Theory]
+    [InlineData(CatalogoRecursos.MultiUsuario)]
+    [InlineData(CatalogoRecursos.JornadaPorPessoa)]
+    [InlineData(CatalogoRecursos.PermissoesAvancadas)]
+    public void O_que_e_cobrado_com_402_ja_esta_pronto(string chave)
+    {
+        var recurso = CatalogoRecursos.Obter(chave);
+
+        Assert.NotNull(recurso);
+        Assert.True(recurso!.Disponivel, $"{chave} bloqueia com 402 mas está marcado como em breve.");
+    }
+
+    [Fact]
+    public void Em_breve_nao_muda_o_que_o_plano_libera()
+    {
+        // A marca é informativa: o Platinum continua contando os 18 recursos do degrau.
+        var platinum = Plano("PLATINUM", 2, CatalogoRecursos.ListaAteNivel(2));
+
+        Assert.Equal(18, platinum.ChavesDeRecurso().Count);
+        Assert.True(platinum.Libera(CatalogoRecursos.Turmas));
+        Assert.False(CatalogoRecursos.Obter(CatalogoRecursos.Turmas)!.Disponivel);
+    }
+
+    /// <summary>
     /// A última migração de recursos grava as chaves em SQL literal. Se o catálogo mudar
     /// sem que uma nova migração acompanhe, o banco fica para trás — este teste denuncia.
     /// Ao acrescentar um recurso: crie a migração e atualize as constantes abaixo.

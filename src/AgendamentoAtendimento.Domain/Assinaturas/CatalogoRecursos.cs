@@ -10,7 +10,16 @@ public sealed record RecursoPlano(
     string Nome,
     string Grupo,
     int NivelMinimo,
-    string? Descricao = null);
+    string? Descricao = null,
+    bool Disponivel = true)
+{
+    /// <summary>
+    /// Recurso que o plano promete mas o sistema ainda não entrega. A tela de planos mostra
+    /// como "em breve" — quem contrata não deve esperar algo que não existe, e a cobrança
+    /// de assento não muda por causa disto.
+    /// </summary>
+    public bool EmBreve => !Disponivel;
+}
 
 /// <summary>
 /// Catálogo de recursos por plano. É a fonte única do que cada degrau libera: a Api
@@ -66,33 +75,33 @@ public static class CatalogoRecursos
         new(Clientes, "Cadastro de clientes (pessoa e empresa)", GrupoAgenda, 1),
         new(Catalogo, "Catálogo de produtos e serviços", GrupoAgenda, 1),
         new(Vendas, "Vendas e recebimentos", GrupoGestao, 1),
-        new(PaginaOnline, "Página de agendamento online", GrupoAgenda, 1),
-        new(LembreteEmail, "Lembretes automáticos por e-mail", GrupoAgenda, 1),
-        new(ContratosESinal, "Contratos, pré-pagamento e sinal", GrupoGestao, 1),
+        new(PaginaOnline, "Página de agendamento online", GrupoAgenda, 1, Disponivel: false),
+        new(LembreteEmail, "Lembretes automáticos por e-mail", GrupoAgenda, 1, Disponivel: false),
+        new(ContratosESinal, "Contratos, pré-pagamento e sinal", GrupoGestao, 1, Disponivel: false),
 
         new(MultiUsuario, "Vários usuários no time", GrupoTime, 2,
             "Cada usuário além dos inclusos entra na assinatura."),
         new(JornadaPorPessoa, "Jornada e folga por pessoa do time", GrupoTime, 2),
-        new(PoliticaCancelamento, "Política de cancelamento e no-show", GrupoAgenda, 2),
-        new(CartaoEmArquivo, "Cartão em arquivo", GrupoGestao, 2),
-        new(LembreteSmsWhats, "Lembretes por SMS e WhatsApp", GrupoAgenda, 2),
-        new(GoogleCalendar, "Sincronização com Google Calendar", GrupoAgenda, 2),
-        new(AgendamentoRecorrente, "Agendamento recorrente", GrupoAgenda, 2),
-        new(SemMarca, "Sem a marca da plataforma", GrupoAgenda, 2),
-        new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2),
-        new(ListaDeEspera, "Lista de espera", GrupoAgenda, 2),
-        new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2),
+        new(PoliticaCancelamento, "Política de cancelamento e no-show", GrupoAgenda, 2, Disponivel: false),
+        new(CartaoEmArquivo, "Cartão em arquivo", GrupoGestao, 2, Disponivel: false),
+        new(LembreteSmsWhats, "Lembretes por SMS e WhatsApp", GrupoAgenda, 2, Disponivel: false),
+        new(GoogleCalendar, "Sincronização com Google Calendar", GrupoAgenda, 2, Disponivel: false),
+        new(AgendamentoRecorrente, "Agendamento recorrente", GrupoAgenda, 2, Disponivel: false),
+        new(SemMarca, "Sem a marca da plataforma", GrupoAgenda, 2, Disponivel: false),
+        new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2, Disponivel: false),
+        new(ListaDeEspera, "Lista de espera", GrupoAgenda, 2, Disponivel: false),
+        new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2, Disponivel: false),
 
-        new(RelatoriosAvancados, "Relatórios avançados e lucratividade", GrupoGestao, 3),
+        new(RelatoriosAvancados, "Relatórios avançados e lucratividade", GrupoGestao, 3, Disponivel: false),
         new(Comissoes, "Comissões e folha do time", GrupoTime, 3,
-            "Inclui comissão fixa e mais de uma faixa de valor-hora."),
-        new(PontoDoTime, "Registro de ponto e horas do time", GrupoTime, 3),
-        new(MultiUnidade, "Várias unidades", GrupoGestao, 3),
+            "Inclui comissão fixa e mais de uma faixa de valor-hora.", Disponivel: false),
+        new(PontoDoTime, "Registro de ponto e horas do time", GrupoTime, 3, Disponivel: false),
+        new(MultiUnidade, "Várias unidades", GrupoGestao, 3, Disponivel: false),
         new(PermissoesAvancadas, "Permissões avançadas por perfil", GrupoTime, 3),
-        new(SalasEEquipamentos, "Salas e equipamentos com reserva", GrupoTime, 3),
+        new(SalasEEquipamentos, "Salas e equipamentos com reserva", GrupoTime, 3, Disponivel: false),
 
         new(Onboarding, "Onboarding dedicado", GrupoParceria, 4),
-        new(ApiPublica, "API pública", GrupoParceria, 4),
+        new(ApiPublica, "API pública", GrupoParceria, 4, Disponivel: false),
         new(GerenteDeConta, "Gerente de conta dedicado", GrupoParceria, 4),
     };
 
@@ -103,6 +112,10 @@ public static class CatalogoRecursos
         string.IsNullOrWhiteSpace(chave)
             ? null
             : Todos.FirstOrDefault(r => string.Equals(r.Chave, chave, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>O que já funciona de verdade, por degrau.</summary>
+    public static IReadOnlyList<string> DisponiveisAteNivel(int nivel) =>
+        Todos.Where(r => r.NivelMinimo <= nivel && r.Disponivel).Select(r => r.Chave).ToList();
 
     /// <summary>Chaves liberadas até um degrau, na ordem do catálogo.</summary>
     public static IReadOnlyList<string> AteNivel(int nivel) =>

@@ -150,6 +150,21 @@ Os degraus seguem a tabela do Square Appointments (Free, Plus e Premium), com o 
 somando o que costuma ser acordo comercial. A colocação de cada recurso está fixada em
 teste: mudar um de degrau muda o que a empresa paga.
 
+### O que o plano promete e o que o sistema entrega
+
+Cada recurso carrega `disponivel`. **`false` significa que o plano promete mas o sistema
+ainda não implementa** — a tela de planos mostra "em breve" em vez de um visto. Hoje são
+9 prontos de 27, então os planos entregam 4, 6, 7 e 9 dos 7, 18, 24 e 27 que anunciam.
+
+Prontos: agendamentos, clientes, catálogo, vendas, vários usuários no time, jornada por
+pessoa, permissões avançadas, onboarding e gerente de conta (os dois últimos são serviço
+humano, não software).
+
+Dois testes seguram isso: um fixa a lista do que está pronto, e outro garante que nenhuma
+rota recusa com 402 um recurso ainda não implementado — cobrar por uma porta que não existe
+seria pior que não ter a porta. Ao terminar um recurso, tire o `Disponivel: false` dele e
+atualize os dois testes.
+
 A fonte é `CatalogoRecursos` no domínio; `planos.recursos` guarda as chaves. As migrações
 `RecursosPorPlano` e `RecursosRevisadosComSquare` trazem os planos já gravados para elas —
 ao acrescentar um recurso, crie uma nova migração e atualize as constantes do teste de

@@ -153,7 +153,8 @@ public static class Mapeamentos
         return CatalogoRecursos.Todos.Select(r => new RecursoDto(
             r.Chave, r.Nome, r.Grupo, r.Descricao,
             inclusos.Contains(r.Chave), r.NivelMinimo,
-            CatalogoRecursos.MenorPlanoQueLibera(r.Chave, lista)?.Nome)).ToList();
+            CatalogoRecursos.MenorPlanoQueLibera(r.Chave, lista)?.Nome,
+            r.Disponivel)).ToList();
     }
 
     public static PlanoDto ParaDto(this Plano p, IEnumerable<Plano>? todos = null) => new(

@@ -165,7 +165,9 @@ public sealed record PerfilRequest(string Nome, string? Descricao, IReadOnlyList
 /// <summary>Um recurso do catálogo, já resolvido para o plano que está sendo mostrado.</summary>
 public sealed record RecursoDto(
     string Chave, string Nome, string Grupo, string? Descricao,
-    bool Incluso, int NivelMinimo, string? PlanoMinimo);
+    bool Incluso, int NivelMinimo, string? PlanoMinimo,
+    /// <summary>false = o plano promete, mas o sistema ainda não entrega.</summary>
+    bool Disponivel);
 
 public sealed record GrupoRecursosDto(string Grupo, IReadOnlyList<RecursoDto> Recursos);
 
