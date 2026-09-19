@@ -106,8 +106,11 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException("O período não pode passar de 62 dias.", "PERIODO");
         }
 
-        var duracao = await DuracaoDosItensAsync(itensIds ?? Array.Empty<long>(), ct);
-        var dias = await _disponibilidade.ObterPeriodoAsync(de, ate, duracao, responsavelId, ct);
+        var itens = itensIds ?? Array.Empty<long>();
+        var duracao = await DuracaoDosItensAsync(itens, ct);
+        // Os itens também dizem quem pode prestar: sem eles, a semana contaria encaixes
+        // com quem não presta o serviço, e o dia — que já filtra — mostraria menos.
+        var dias = await _disponibilidade.ObterPeriodoAsync(de, ate, duracao, responsavelId, ct, itens);
         return Ok(dias.Select(d => d.ParaDto()).ToList());
     }
 

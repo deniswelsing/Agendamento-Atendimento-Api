@@ -157,7 +157,7 @@ public class DisponibilidadeService
         var dias = new List<DiaDaAgenda>();
         for (var data = de; data <= ate; data = data.AddDays(1))
         {
-            dias.Add(await ObterDiaAsync(data, duracaoMinutos, responsavelId, ct));
+            dias.Add(await ObterDiaAsync(data, duracaoMinutos, responsavelId, ct, itensIds));
         }
         return dias;
     }

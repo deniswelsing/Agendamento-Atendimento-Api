@@ -198,6 +198,39 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
         Assert.Contains(dia.Livres, s => s.Inicio == oitoHoras && s.ResponsavelId == CaioId);
     }
 
+    /// <summary>
+    /// A semana e o mês passam pelo período. Se ele não levasse os itens, a semana
+    /// prometeria encaixes que o dia recusa — e o cliente só descobriria ao abrir o dia.
+    /// </summary>
+    [Fact]
+    public async Task O_periodo_filtra_igual_ao_dia()
+    {
+        await MarcarExecutorAsync(CorteId, BrunaId);
+
+        var dias = await _servico.ObterPeriodoAsync(
+            Segunda, Segunda, 30, null, default, new[] { CorteId });
+        var semana = Assert.Single(dias);
+
+        Assert.Contains(semana.Livres, s => s.ResponsavelId == BrunaId);
+        Assert.DoesNotContain(semana.Livres, s => s.ResponsavelId == CaioId);
+
+        var dia = await EncaixesAsync(CorteId);
+        Assert.Equal(dia.Livres.Count, semana.Livres.Count);
+    }
+
+    /// <summary>Sem itens, o período segue mostrando o time inteiro.</summary>
+    [Fact]
+    public async Task O_periodo_sem_itens_mostra_todo_mundo()
+    {
+        await MarcarExecutorAsync(CorteId, BrunaId);
+
+        var dias = await _servico.ObterPeriodoAsync(Segunda, Segunda, 30, null, default);
+        var semana = Assert.Single(dias);
+
+        Assert.Contains(semana.Livres, s => s.ResponsavelId == BrunaId);
+        Assert.Contains(semana.Livres, s => s.ResponsavelId == CaioId);
+    }
+
     [Fact]
     public async Task Filtrar_por_responsavel_ainda_respeita_a_habilidade()
     {
