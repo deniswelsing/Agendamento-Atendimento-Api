@@ -31,6 +31,7 @@ builder.Services.AddScoped<IContextoAtual>(sp => sp.GetRequiredService<ContextoA
 builder.Services.AddScoped<DisponibilidadeService>();
 builder.Services.AddScoped<AssinaturaService>();
 builder.Services.AddScoped<VendaService>();
+builder.Services.AddScoped<CobrancaService>();
 builder.Services.AddScoped<ServicoDeToken>();
 
 // ------------------------------------------------------------------ autenticação

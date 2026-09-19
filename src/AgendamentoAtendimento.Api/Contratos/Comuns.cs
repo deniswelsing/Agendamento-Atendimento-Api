@@ -83,7 +83,14 @@ public sealed record VendaItemDto(
 public sealed record PagamentoDto(
     long PagamentoId, long FormaPagamentoId, string FormaPagamentoNome, StatusPagamento Status,
     decimal Valor, decimal ValorTaxa, decimal ValorLiquido, int Parcela, int TotalParcelas,
-    DateTimeOffset? ConfirmadoEm, DateOnly? PrevisaoLiquidacao, string? Autorizacao);
+    DateTimeOffset? ConfirmadoEm, DateOnly? PrevisaoLiquidacao, string? Autorizacao,
+    MeioDeCaptura Meio,
+    /// <summary>O que a alíquota configurada previa, congelado no lançamento.</summary>
+    decimal ValorTaxaEstimada,
+    /// <summary>false = o líquido é previsão; a adquirente ainda não confirmou a taxa.</summary>
+    bool TaxaConferida,
+    decimal DivergenciaDaTaxa,
+    string? Nsu, string? Bandeira, string? UltimosDigitos, string? AdquirenteChave);
 
 public sealed record VendaDto(
     long VendaId, long ClienteId, string ClienteNome, StatusVenda Status,
@@ -98,6 +105,44 @@ public sealed record VendaRequest(
     decimal DescontoGeral = 0, string? Observacao = null);
 
 public sealed record PagamentoRequest(long FormaPagamentoId, decimal Valor, int Parcelas = 1, string? Autorizacao = null);
+
+// ---------------------------------------------------------------------- cobrança
+public sealed record CobrancaDto(
+    long CobrancaId, long VendaId, StatusCobranca Status, MeioDeCaptura Meio,
+    long FormaPagamentoId, string FormaPagamentoNome, decimal Valor, int Parcelas,
+    string ChaveIdempotencia, string? AdquirenteChave, string? TerminalSerie,
+    string? Nsu, string? CodigoAutorizacao, string? Bandeira, string? UltimosDigitos,
+    string? TransacaoExternaId, string? PixCopiaECola, decimal? ValorTaxaReal,
+    string? MotivoRecusa, DateTimeOffset? EnviadaEm, DateTimeOffset? RespondidaEm,
+    DateTimeOffset ExpiraEm, bool EstaAberta, long? PagamentoId,
+    /// <summary>true quando a chave repetida devolveu uma cobrança que já existia.</summary>
+    bool JaExistia);
+
+public sealed record AbrirCobrancaRequest(
+    long FormaPagamentoId,
+    decimal Valor,
+    MeioDeCaptura Meio,
+    /// <summary>Gerada pelo app. A mesma chave nunca abre duas cobranças.</summary>
+    string ChaveIdempotencia,
+    int Parcelas = 1,
+    string? AdquirenteChave = null,
+    string? TerminalSerie = null);
+
+public sealed record ConcluirCobrancaRequest(
+    bool Aprovada,
+    string? Nsu = null,
+    string? CodigoAutorizacao = null,
+    string? Bandeira = null,
+    string? UltimosDigitos = null,
+    string? TransacaoExternaId = null,
+    decimal? ValorTaxaReal = null,
+    string? MotivoRecusa = null);
+
+public sealed record EnviarCobrancaRequest(string? PixCopiaECola = null);
+
+public sealed record CancelarCobrancaRequest(string? Motivo = null);
+
+public sealed record ConciliarPagamentoRequest(decimal ValorTaxaReal);
 
 public sealed record FormaPagamentoDto(
     long FormaPagamentoId, string Nome, string Codigo, bool Ativa, bool PermiteParcelamento,

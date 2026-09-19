@@ -42,6 +42,7 @@ public class AppDbContext : DbContext
     public DbSet<VendaItem> VendaItens => Set<VendaItem>();
     public DbSet<FormaPagamento> FormasPagamento => Set<FormaPagamento>();
     public DbSet<Pagamento> Pagamentos => Set<Pagamento>();
+    public DbSet<Cobranca> Cobrancas => Set<Cobranca>();
     public DbSet<Plano> Planos => Set<Plano>();
     public DbSet<Assinatura> Assinaturas => Set<Assinatura>();
     public DbSet<AssinaturaProduto> AssinaturaProdutos => Set<AssinaturaProduto>();

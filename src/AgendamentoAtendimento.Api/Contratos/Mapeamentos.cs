@@ -95,10 +95,23 @@ public static class Mapeamentos
         v.Itens.Select(i => new VendaItemDto(
             i.Id, i.ItemCatalogoId, i.Tipo, i.Nome, i.Quantidade, i.PrecoUnitario,
             i.DescontoValor, i.TotalLiquido)).ToList(),
-        v.Pagamentos.Select(p => new PagamentoDto(
-            p.Id, p.FormaPagamentoId, p.FormaPagamento?.Nome ?? string.Empty, p.Status,
-            p.Valor, p.ValorTaxa, p.ValorLiquido, p.Parcela, p.TotalParcelas,
-            p.ConfirmadoEm, p.PrevisaoLiquidacao, p.Autorizacao)).ToList());
+        v.Pagamentos.Select(p => p.ParaDto()).ToList());
+
+    public static PagamentoDto ParaDto(this Pagamento p) => new(
+        p.Id, p.FormaPagamentoId, p.FormaPagamento?.Nome ?? string.Empty, p.Status,
+        p.Valor, p.ValorTaxa, p.ValorLiquido, p.Parcela, p.TotalParcelas,
+        p.ConfirmadoEm, p.PrevisaoLiquidacao, p.Autorizacao,
+        p.Meio, p.ValorTaxaEstimada, p.TaxaConferida, p.DivergenciaDaTaxa,
+        p.Nsu, p.Bandeira, p.UltimosDigitos, p.AdquirenteChave);
+
+    public static CobrancaDto ParaDto(this Cobranca c, bool jaExistia = false) => new(
+        c.Id, c.VendaId, c.Status, c.Meio, c.FormaPagamentoId,
+        c.FormaPagamento?.Nome ?? string.Empty, c.Valor, c.Parcelas,
+        c.ChaveIdempotencia, c.AdquirenteChave, c.TerminalSerie,
+        c.Nsu, c.CodigoAutorizacao, c.Bandeira, c.UltimosDigitos,
+        c.TransacaoExternaId, c.PixCopiaECola, c.ValorTaxaReal,
+        c.MotivoRecusa, c.EnviadaEm, c.RespondidaEm, c.ExpiraEm,
+        c.EstaAberta, c.PagamentoId, jaExistia);
 
     public static FormaPagamentoDto ParaDto(this FormaPagamento f) => new(
         f.Id, f.Nome, f.Codigo, f.Ativa, f.PermiteParcelamento, f.MaximoParcelas,

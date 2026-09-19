@@ -97,6 +97,55 @@ ter a permissão e ainda assim esbarrar no plano — aí a resposta é **402** c
 | `PUT /api/horarios/staff/{usuarioId}` | `jornada-por-pessoa` |
 | `POST/DELETE /api/horarios/staff/ausencias` | `jornada-por-pessoa` |
 
+## Cobrança: maquininha, Pix e gateway
+
+```
+POST /api/vendas/{id}/cobrancas     { formaPagamentoId, valor, meio, chaveIdempotencia, parcelas?, adquirenteChave?, terminalSerie? }
+GET  /api/vendas/{id}/cobrancas
+GET  /api/cobrancas/{id}
+POST /api/cobrancas/{id}/enviar     { pixCopiaECola? }
+POST /api/cobrancas/{id}/concluir   { aprovada, nsu?, codigoAutorizacao?, bandeira?, ultimosDigitos?, transacaoExternaId?, valorTaxaReal?, motivoRecusa? }
+POST /api/cobrancas/{id}/cancelar   { motivo? }
+POST /api/pagamentos/{id}/conciliar { valorTaxaReal }
+GET  /api/pagamentos/divergencias
+```
+
+`meio` é `Manual`, `TerminalPresente`, `PixQr` ou `GatewayOnline`. O desenho é o mesmo
+para os três últimos: só muda quem responde o `concluir`.
+
+**A ordem existe por um motivo.** `abrir` grava a intenção **antes** de o cliente ser
+cobrado. Entre mandar cobrar e saber o resultado o app pode cair, a rede pode sumir e a
+pessoa pode tocar de novo — sem um registro anterior, uma cobrança aprovada que não voltou
+vira dinheiro cobrado e não lançado.
+
+- Repetir a mesma `chaveIdempotencia` devolve **200** com a cobrança que já existe e
+  `jaExistia: true`; a criação de verdade devolve **201**. O cliente nunca é cobrado duas vezes.
+- Uma venda só tem **uma cobrança aberta por vez**. A segunda é recusada com 400.
+- `concluir` é idempotente: a mesma resposta chegando duas vezes não duplica o lançamento.
+- Uma cobrança aberta expira em 10 minutos e **nunca** vira pagamento depois disso. Se o
+  dinheiro entrou mesmo assim, ele aparece na conciliação como transação sem lançamento —
+  um problema visível, que é melhor que um lançamento inventado.
+
+### Taxa estimada e taxa real
+
+O pagamento guarda as duas. `valorTaxaEstimada` é o que a alíquota configurada previa,
+congelado no lançamento; `valorTaxa` é a que vale hoje e entra no líquido. Enquanto
+`taxaConferida` for `false`, **o líquido é previsão, não fato** — foi calculado pela
+configuração, não pelo que a adquirente cobrou.
+
+`concluir` com `valorTaxaReal` já grava a taxa verdadeira. Para o que foi digitado à mão,
+`POST /api/pagamentos/{id}/conciliar` corrige depois, contra o extrato.
+`GET /api/pagamentos/divergencias` é a fila de conferência: o que ainda não foi conferido,
+mais o que veio diferente do previsto.
+
+O pagamento também guarda `meio`, `nsu`, `bandeira`, `ultimosDigitos` e `adquirenteChave`.
+`Manual` quer dizer que o sistema não viu a transação: alguém passou o cartão numa
+maquininha de fora e digitou o valor.
+
+**O que ainda não existe:** nenhum SDK de adquirente está integrado. Hoje quem chama
+`concluir` é o app, com o que a maquininha respondeu. Esta é a base que serve igual para
+Stone, Cielo, PagBank ou Mercado Pago — a integração com cada uma entra por cima dela.
+
 ## Agenda: disponibilidade
 
 ```

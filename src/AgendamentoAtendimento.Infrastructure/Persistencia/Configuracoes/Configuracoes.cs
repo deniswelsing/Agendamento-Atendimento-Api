@@ -247,9 +247,46 @@ public class PagamentoConfig : IEntityTypeConfiguration<Pagamento>
     {
         b.Property(p => p.Autorizacao).HasMaxLength(120);
         b.Property(p => p.Observacao).HasMaxLength(500);
+        b.Property(p => p.Nsu).HasMaxLength(60);
+        b.Property(p => p.Bandeira).HasMaxLength(40);
+        b.Property(p => p.UltimosDigitos).HasMaxLength(4);
+        b.Property(p => p.AdquirenteChave).HasMaxLength(40);
+        b.Ignore(p => p.DivergenciaDaTaxa);
         b.HasOne(p => p.FormaPagamento).WithMany().HasForeignKey(p => p.FormaPagamentoId)
             .OnDelete(DeleteBehavior.Restrict);
         b.HasIndex(p => new { p.TenantId, p.Status });
+        // A conciliação procura pelo NSU: é por ele que a transação é achada no extrato.
+        b.HasIndex(p => new { p.TenantId, p.Nsu });
+    }
+}
+
+public class CobrancaConfig : IEntityTypeConfiguration<Cobranca>
+{
+    public void Configure(EntityTypeBuilder<Cobranca> b)
+    {
+        b.Property(c => c.ChaveIdempotencia).HasMaxLength(80).IsRequired();
+        b.Property(c => c.AdquirenteChave).HasMaxLength(40);
+        b.Property(c => c.TerminalSerie).HasMaxLength(60);
+        b.Property(c => c.Nsu).HasMaxLength(60);
+        b.Property(c => c.CodigoAutorizacao).HasMaxLength(120);
+        b.Property(c => c.Bandeira).HasMaxLength(40);
+        b.Property(c => c.UltimosDigitos).HasMaxLength(4);
+        b.Property(c => c.TransacaoExternaId).HasMaxLength(120);
+        b.Property(c => c.PixCopiaECola).HasMaxLength(2000);
+        b.Property(c => c.MotivoRecusa).HasMaxLength(300);
+        b.Ignore(c => c.EstaAberta);
+
+        b.HasOne(c => c.Venda).WithMany().HasForeignKey(c => c.VendaId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(c => c.FormaPagamento).WithMany().HasForeignKey(c => c.FormaPagamentoId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasOne(c => c.Pagamento).WithMany().HasForeignKey(c => c.PagamentoId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // É este índice que impede a cobrança dupla: a mesma chave nunca abre duas.
+        b.HasIndex(c => new { c.TenantId, c.ChaveIdempotencia })
+            .IsUnique().HasFilter(Indices.SomenteAtivos);
+        b.HasIndex(c => new { c.TenantId, c.VendaId, c.Status });
     }
 }
 

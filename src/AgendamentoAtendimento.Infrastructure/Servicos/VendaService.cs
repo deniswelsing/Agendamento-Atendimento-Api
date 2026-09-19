@@ -48,26 +48,70 @@ public class VendaService
         var forma = await _db.FormasPagamento.FirstOrDefaultAsync(f => f.Id == formaPagamentoId, ct)
             ?? throw new InvalidOperationException("Forma de pagamento não encontrada.");
 
-        var taxa = Arredondar(valor * forma.TaxaPercentual / 100m + forma.TaxaFixa);
-        var pagamento = new Pagamento
+        var pagamento = MontarPagamento(venda, forma, valor, parcelas, MeioDeCaptura.Manual);
+        pagamento.Autorizacao = autorizacao;
+
+        venda.Pagamentos.Add(pagamento);
+        AtualizarStatus(venda);
+
+        await _db.SaveChangesAsync(ct);
+        return pagamento;
+    }
+
+    /// <summary>
+    /// Monta o lançamento com a taxa que a configuração prevê. Enquanto a adquirente não
+    /// confirmar, `TaxaConferida` fica falso: o líquido é previsão, não fato.
+    /// </summary>
+    public Pagamento MontarPagamento(
+        Venda venda, FormaPagamento forma, decimal valor, int parcelas, MeioDeCaptura meio)
+    {
+        ArgumentNullException.ThrowIfNull(venda);
+        ArgumentNullException.ThrowIfNull(forma);
+
+        var estimada = Arredondar(valor * forma.TaxaPercentual / 100m + forma.TaxaFixa);
+        return new Pagamento
         {
             VendaId = venda.Id,
             FormaPagamentoId = forma.Id,
             Status = StatusPagamento.Confirmado,
             Valor = Arredondar(valor),
-            ValorTaxa = taxa,
-            ValorLiquido = Arredondar(valor - taxa),
+            ValorTaxa = estimada,
+            ValorTaxaEstimada = estimada,
+            TaxaConferida = false,
+            ValorLiquido = Arredondar(valor - estimada),
             Parcela = 1,
             TotalParcelas = Math.Max(1, parcelas),
+            Meio = meio,
             ConfirmadoEm = DateTimeOffset.UtcNow,
             PrevisaoLiquidacao = DateOnly.FromDateTime(
                 DateTime.UtcNow.AddDays(forma.DiasParaLiquidacao)),
-            Autorizacao = autorizacao,
         };
+    }
 
-        venda.Pagamentos.Add(pagamento);
+    /// <summary>
+    /// Troca a taxa estimada pela que a adquirente cobrou de verdade e refaz o líquido.
+    /// A estimada continua gravada: é ela que revela a diferença.
+    /// </summary>
+    public void ConciliarTaxa(Pagamento pagamento, decimal taxaReal)
+    {
+        ArgumentNullException.ThrowIfNull(pagamento);
+        if (taxaReal < 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(taxaReal), "A taxa não pode ser negativa.");
+        }
+
+        pagamento.ValorTaxa = Arredondar(taxaReal);
+        pagamento.ValorLiquido = Arredondar(pagamento.Valor - pagamento.ValorTaxa);
+        pagamento.TaxaConferida = true;
+        pagamento.ConciliadoEm = DateTimeOffset.UtcNow;
+    }
+
+    /// <summary>Ajusta o status da venda a partir do que já foi pago.</summary>
+    public void AtualizarStatus(Venda venda)
+    {
+        ArgumentNullException.ThrowIfNull(venda);
+
         RecalcularTotais(venda);
-
         venda.Status = venda.TotalPago >= venda.TotalLiquido && venda.TotalLiquido > 0
             ? StatusVenda.Paga
             : StatusVenda.AguardandoPagamento;
@@ -76,9 +120,6 @@ public class VendaService
         {
             venda.FinalizadaEm = DateTimeOffset.UtcNow;
         }
-
-        await _db.SaveChangesAsync(ct);
-        return pagamento;
     }
 
     private static decimal Arredondar(decimal valor) =>
