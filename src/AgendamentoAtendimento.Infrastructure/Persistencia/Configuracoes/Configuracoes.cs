@@ -199,6 +199,20 @@ public class ExcecaoHorarioStaffConfig : IEntityTypeConfiguration<ExcecaoHorario
     }
 }
 
+public class ExecutorDeServicoConfig : IEntityTypeConfiguration<ExecutorDeServico>
+{
+    public void Configure(EntityTypeBuilder<ExecutorDeServico> b)
+    {
+        b.HasOne(e => e.ItemCatalogo).WithMany().HasForeignKey(e => e.ItemCatalogoId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(e => e.Usuario).WithMany().HasForeignKey(e => e.UsuarioId)
+            .OnDelete(DeleteBehavior.Cascade);
+        // A mesma pessoa não entra duas vezes no mesmo serviço.
+        b.HasIndex(e => new { e.TenantId, e.ItemCatalogoId, e.UsuarioId })
+            .IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
 public class VendaConfig : IEntityTypeConfiguration<Venda>
 {
     public void Configure(EntityTypeBuilder<Venda> b)

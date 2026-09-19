@@ -32,6 +32,7 @@ public class AppDbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Cliente> Clientes => Set<Cliente>();
     public DbSet<ItemCatalogo> ItensCatalogo => Set<ItemCatalogo>();
+    public DbSet<ExecutorDeServico> ExecutoresDeServico => Set<ExecutorDeServico>();
     public DbSet<Agendamento> Agendamentos => Set<Agendamento>();
     public DbSet<AgendamentoItem> AgendamentoItens => Set<AgendamentoItem>();
     public DbSet<HorarioFuncionamento> HorariosFuncionamento => Set<HorarioFuncionamento>();

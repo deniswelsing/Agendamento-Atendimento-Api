@@ -158,6 +158,12 @@ public sealed record FormaPagamentoRequest(
     string Nome, string Codigo, bool Ativa = true, bool PermiteParcelamento = false,
     int MaximoParcelas = 1, decimal TaxaPercentual = 0, decimal TaxaFixa = 0, int DiasParaLiquidacao = 0);
 
+/// <summary>Quem pode prestar um serviço. Lista vazia = qualquer atendente.</summary>
+public sealed record ExecutoresDoServicoDto(
+    long ItemId, string Nome, IReadOnlyList<MembroTimeDto> Executores, bool AbertoATodos);
+
+public sealed record DefinirExecutoresRequest(IReadOnlyList<long> UsuariosIds);
+
 // ---------------------------------------------------------------------- horários
 public sealed record HorarioFuncionamentoDto(
     long HorarioId, DayOfWeek DiaDaSemana, bool Aberto, TimeOnly? Abertura, TimeOnly? Fechamento,

@@ -132,4 +132,85 @@ public class CatalogoController : ControllerBaseApi
                 "Informe a duração do serviço em minutos.", "DURACAO");
         }
     }
+
+    /// <summary>
+    /// Quem pode prestar este serviço. Lista vazia quer dizer que qualquer atendente pode —
+    /// é o padrão, e é o que mantém agendável o que existia antes desta regra.
+    /// </summary>
+    [HttpGet("itens/{id:long}/executores")]
+    [RequerPermissao("catalogo.ver")]
+    public async Task<ActionResult<ExecutoresDoServicoDto>> Executores(
+        long id, CancellationToken ct)
+    {
+        var item = NaoNulo(
+            await _db.ItensCatalogo.AsNoTracking().FirstOrDefaultAsync(i => i.Id == id, ct),
+            "Item não encontrado.");
+
+        var ids = await _db.ExecutoresDeServico.AsNoTracking()
+            .Where(e => e.ItemCatalogoId == id).Select(e => e.UsuarioId).ToListAsync(ct);
+
+        var pessoas = await _db.Usuarios.AsNoTracking().Include(u => u.Perfil)
+            .Where(u => ids.Contains(u.Id)).OrderBy(u => u.Nome).ToListAsync(ct);
+
+        return Ok(new ExecutoresDoServicoDto(
+            item.Id, item.Nome, pessoas.Select(u => u.ParaDto()).ToList(), ids.Count == 0));
+    }
+
+    /// <summary>
+    /// Define quem presta o serviço. Mandar lista vazia reabre para todo o time.
+    ///
+    /// A gravação é por diferença: quem já estava e continua não é tocado, para não
+    /// ressuscitar chave única de linha excluída logicamente.
+    /// </summary>
+    [HttpPut("itens/{id:long}/executores")]
+    [RequerPermissao("catalogo.editar")]
+    public async Task<ActionResult<ExecutoresDoServicoDto>> DefinirExecutores(
+        long id, DefinirExecutoresRequest req, CancellationToken ct)
+    {
+        var item = NaoNulo(
+            await _db.ItensCatalogo.FirstOrDefaultAsync(i => i.Id == id, ct),
+            "Item não encontrado.");
+
+        if (item.Tipo != TipoItem.Servico)
+        {
+            throw new RegraDeNegocioException(
+                "Só serviço tem quem presta.", "SO_SERVICO");
+        }
+
+        var pedidos = (req.UsuariosIds ?? Array.Empty<long>()).Distinct().ToList();
+
+        // Quem não atende não presta serviço: aceitar seria prometer encaixe que a agenda
+        // nunca vai oferecer.
+        var validos = await _db.Usuarios.AsNoTracking()
+            .Where(u => pedidos.Contains(u.Id) && u.Ativo && u.Atendente)
+            .Select(u => u.Id)
+            .ToListAsync(ct);
+
+        var invalidos = pedidos.Except(validos).ToList();
+        if (invalidos.Count > 0)
+        {
+            throw new RegraDeNegocioException(
+                "Só quem atende pode prestar serviço.", "NAO_ATENDENTE");
+        }
+
+        var atuais = await _db.ExecutoresDeServico
+            .Where(e => e.ItemCatalogoId == id).ToListAsync(ct);
+
+        foreach (var sobrando in atuais.Where(a => !validos.Contains(a.UsuarioId)))
+        {
+            _db.ExecutoresDeServico.Remove(sobrando);
+        }
+
+        foreach (var novoId in validos.Where(v => atuais.All(a => a.UsuarioId != v)))
+        {
+            _db.ExecutoresDeServico.Add(new ExecutorDeServico
+            {
+                ItemCatalogoId = id,
+                UsuarioId = novoId,
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return await Executores(id, ct);
+    }
 }

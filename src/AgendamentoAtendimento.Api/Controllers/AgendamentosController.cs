@@ -81,8 +81,10 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] long? responsavelId,
         CancellationToken ct = default)
     {
-        var duracao = await DuracaoDosItensAsync(itensIds ?? Array.Empty<long>(), ct);
-        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, responsavelId, ct);
+        var itens = itensIds ?? Array.Empty<long>();
+        var duracao = await DuracaoDosItensAsync(itens, ct);
+        // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
+        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, responsavelId, ct, itens);
         return Ok(dia.ParaDto());
     }
 
@@ -137,7 +139,7 @@ public class AgendamentosController : ControllerBaseApi
         var fim = inicio.AddMinutes(duracao);
 
         var responsavelId = req.ResponsavelId
-            ?? await EscolherResponsavelLivreAsync(inicio, duracao, ct);
+            ?? await EscolherResponsavelLivreAsync(inicio, duracao, ct, req.ItensIds);
 
         if (responsavelId is null)
         {
@@ -146,7 +148,8 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         // Revalida no servidor: o app pode ter mostrado uma agenda desatualizada.
-        if (!await _disponibilidade.EstaLivreAsync(inicio, fim, responsavelId.Value, null, ct))
+        if (!await _disponibilidade.EstaLivreAsync(
+                inicio, fim, responsavelId.Value, null, ct, req.ItensIds))
         {
             throw new RegraDeNegocioException(
                 "Esse horário acabou de ser ocupado ou está fora da janela de atendimento.",
@@ -212,7 +215,8 @@ public class AgendamentosController : ControllerBaseApi
         var responsavelId = req.ResponsavelId ?? agendamento.ResponsavelId;
 
         if (responsavelId is null ||
-            !await _disponibilidade.EstaLivreAsync(inicio, fim, responsavelId.Value, id, ct))
+            !await _disponibilidade.EstaLivreAsync(
+                inicio, fim, responsavelId.Value, id, ct, req.ItensIds))
         {
             throw new RegraDeNegocioException(
                 "Esse horário não está disponível para o responsável escolhido.",
@@ -328,10 +332,11 @@ public class AgendamentosController : ControllerBaseApi
 
     /// <summary>Quando o app manda "quem estiver livre", o servidor escolhe.</summary>
     private async Task<long?> EscolherResponsavelLivreAsync(
-        DateTimeOffset inicio, int duracao, CancellationToken ct)
+        DateTimeOffset inicio, int duracao, CancellationToken ct,
+        IReadOnlyCollection<long>? itensIds = null)
     {
         var data = DateOnly.FromDateTime(inicio.UtcDateTime);
-        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, null, ct);
+        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, null, ct, itensIds);
         return dia.Livres.FirstOrDefault(s => s.Inicio == inicio)?.ResponsavelId;
     }
 

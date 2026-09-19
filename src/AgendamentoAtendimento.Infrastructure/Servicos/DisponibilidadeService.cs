@@ -41,7 +41,8 @@ public class DisponibilidadeService
         DateOnly data,
         int duracaoMinutos,
         long? responsavelId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyCollection<long>? itensIds = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -73,6 +74,10 @@ public class DisponibilidadeService
 
         var duracao = duracaoMinutos > 0 ? duracaoMinutos : intervalo;
         var atendentes = await AtendentesAsync(responsavelId, ct);
+
+        // Quem não sabe prestar o serviço não aparece como encaixe, por mais livre que
+        // esteja a agenda dele.
+        atendentes = await FiltrarPorHabilidadeAsync(atendentes, itensIds, ct);
         var jornadas = await JornadasAsync(diaDaSemana, ct);
         var ausencias = await AusenciasAsync(data, ct);
 
@@ -141,7 +146,8 @@ public class DisponibilidadeService
         DateOnly ate,
         int duracaoMinutos,
         long? responsavelId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyCollection<long>? itensIds = null)
     {
         if (ate < de)
         {
@@ -159,10 +165,14 @@ public class DisponibilidadeService
     /// <summary>Valida se o horário pedido cabe mesmo — chamado antes de gravar.</summary>
     public async Task<bool> EstaLivreAsync(
         DateTimeOffset inicio, DateTimeOffset fim, long responsavelId,
-        long? ignorarAgendamentoId = null, CancellationToken ct = default)
+        long? ignorarAgendamentoId = null, CancellationToken ct = default,
+        IReadOnlyCollection<long>? itensIds = null)
     {
         var data = DateOnly.FromDateTime(inicio.UtcDateTime);
-        var dia = await ObterDiaAsync(data, (int)(fim - inicio).TotalMinutes, responsavelId, ct);
+        // Passa os itens: gravar um agendamento com quem não presta o serviço seria furar
+        // pela porta dos fundos a mesma regra que a tela respeita.
+        var dia = await ObterDiaAsync(
+            data, (int)(fim - inicio).TotalMinutes, responsavelId, ct, itensIds);
         if (!dia.Aberto)
         {
             return false;
@@ -188,6 +198,50 @@ public class DisponibilidadeService
             .Where(a => a.Inicio < fimDia && a.Fim > inicioDia && a.Status != StatusAgendamento.Cancelado)
             .ToListAsync(ct);
     }
+
+    /// <summary>
+    /// Restringe os atendentes aos que sabem prestar **todos** os serviços pedidos — um
+    /// encaixe é atendido por uma pessoa só, então ela precisa dar conta do conjunto.
+    ///
+    /// Um serviço sem executores cadastrados é aberto a qualquer atendente: é o padrão, e
+    /// é o que mantém agendável tudo que existia antes desta regra.
+    /// </summary>
+    public async Task<List<Usuario>> FiltrarPorHabilidadeAsync(
+        List<Usuario> atendentes,
+        IReadOnlyCollection<long>? itensIds,
+        CancellationToken ct = default)
+    {
+        if (itensIds is null || itensIds.Count == 0 || atendentes.Count == 0)
+        {
+            return atendentes;
+        }
+
+        var executores = await _db.ExecutoresDeServico
+            .AsNoTracking()
+            .Where(e => itensIds.Contains(e.ItemCatalogoId))
+            .ToListAsync(ct);
+
+        if (executores.Count == 0)
+        {
+            return atendentes;
+        }
+
+        // Só os serviços que declararam executores restringem; os outros seguem abertos.
+        var comRestricao = executores.Select(e => e.ItemCatalogoId).Distinct().ToList();
+
+        return atendentes.Where(a => comRestricao.All(
+            itemId => executores.Any(e => e.ItemCatalogoId == itemId && e.UsuarioId == a.Id)))
+            .ToList();
+    }
+
+    /// <summary>Quem pode prestar um serviço. Lista vazia quer dizer "qualquer atendente".</summary>
+    public async Task<IReadOnlyList<long>> ExecutoresDoServicoAsync(
+        long itemCatalogoId, CancellationToken ct = default) =>
+        await _db.ExecutoresDeServico
+            .AsNoTracking()
+            .Where(e => e.ItemCatalogoId == itemCatalogoId)
+            .Select(e => e.UsuarioId)
+            .ToListAsync(ct);
 
     private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct) =>
         await _db.Usuarios

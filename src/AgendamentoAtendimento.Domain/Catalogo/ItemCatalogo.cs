@@ -1,4 +1,5 @@
 using AgendamentoAtendimento.Domain.Common;
+using AgendamentoAtendimento.Domain.Usuarios;
 
 namespace AgendamentoAtendimento.Domain.Catalogo;
 
@@ -39,4 +40,20 @@ public class ItemCatalogo : EntidadeDeTenant
     public decimal TaxaPercentual { get; set; }
 
     public bool Agendavel => Tipo == TipoItem.Servico;
+}
+
+/// <summary>
+/// Quem pode prestar um serviço. Sem nenhuma linha para um serviço, **qualquer atendente
+/// pode** — é o padrão, e é o que mantém os serviços que já existiam agendáveis.
+///
+/// Assim que alguém é marcado, a lista passa a ser fechada: a agenda deixa de oferecer
+/// encaixe com quem não sabe fazer aquilo.
+/// </summary>
+public class ExecutorDeServico : EntidadeDeTenant
+{
+    public long ItemCatalogoId { get; set; }
+    public ItemCatalogo? ItemCatalogo { get; set; }
+
+    public long UsuarioId { get; set; }
+    public Usuario? Usuario { get; set; }
 }
