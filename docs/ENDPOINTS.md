@@ -209,6 +209,10 @@ A disponibilidade filtra por `itensIds`: com dois serviços no mesmo encaixe, s�
 quem presta **os dois** — um encaixe é atendido por uma pessoa só. Quando parte dos
 serviços é aberta e parte restrita, só a parte restrita limita.
 
+`/periodo` aplica o mesmo filtro que `/disponibilidade`, desde que receba os mesmos
+`itensIds`: sem eles a semana contaria encaixes com quem não presta o serviço, e o dia
+mostraria menos do que a semana prometeu.
+
 Estar apto não basta: quem sabe fazer mas já tem compromisso naquele horário continua fora
 da lista, como sempre esteve.
 
