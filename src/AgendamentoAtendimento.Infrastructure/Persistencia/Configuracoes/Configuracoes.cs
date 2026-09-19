@@ -137,6 +137,7 @@ public class AgendamentoConfig : IEntityTypeConfiguration<Agendamento>
         b.Property(a => a.Observacoes).HasMaxLength(1000);
         b.Property(a => a.LocalAtendimento).HasMaxLength(250);
         b.Property(a => a.MotivoCancelamento).HasMaxLength(500);
+        b.Property(a => a.CodigoPublico).HasMaxLength(20);
         b.Ignore(a => a.DuracaoMinutos);
         b.HasOne(a => a.Cliente).WithMany().HasForeignKey(a => a.ClienteId)
             .OnDelete(DeleteBehavior.Restrict);
@@ -147,6 +148,11 @@ public class AgendamentoConfig : IEntityTypeConfiguration<Agendamento>
         // A consulta mais quente da agenda: período + responsável.
         b.HasIndex(a => new { a.TenantId, a.Inicio });
         b.HasIndex(a => new { a.TenantId, a.ResponsavelId, a.Inicio });
+        // O código é o que protege a consulta e o cancelamento de quem não tem conta.
+        // Único para que dois clientes nunca caiam no agendamento um do outro.
+        b.HasIndex(a => a.CodigoPublico)
+            .IsUnique()
+            .HasFilter("codigo_publico IS NOT NULL AND excluido = false");
     }
 }
 
@@ -210,6 +216,23 @@ public class ExecutorDeServicoConfig : IEntityTypeConfiguration<ExecutorDeServic
         // A mesma pessoa não entra duas vezes no mesmo serviço.
         b.HasIndex(e => new { e.TenantId, e.ItemCatalogoId, e.UsuarioId })
             .IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
+public class ConfiguracaoPaginaPublicaConfig : IEntityTypeConfiguration<ConfiguracaoPaginaPublica>
+{
+    public void Configure(EntityTypeBuilder<ConfiguracaoPaginaPublica> b)
+    {
+        b.Property(c => c.Slug).HasMaxLength(60).IsRequired();
+        b.Property(c => c.TituloPublico).HasMaxLength(200);
+        b.Property(c => c.Mensagem).HasMaxLength(1000);
+        b.Property(c => c.Endereco).HasMaxLength(300);
+        b.Property(c => c.TelefoneContato).HasMaxLength(30);
+        // O slug é a chave do endereço público: precisa ser único no sistema inteiro,
+        // não por tenant — dois iguais apontariam para empresas diferentes.
+        b.HasIndex(c => c.Slug).IsUnique().HasFilter(Indices.SomenteAtivos);
+        // Uma página por empresa.
+        b.HasIndex(c => c.TenantId).IsUnique().HasFilter(Indices.SomenteAtivos);
     }
 }
 

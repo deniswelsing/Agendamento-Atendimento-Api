@@ -51,7 +51,8 @@ public static class Mapeamentos
 
     public static ItemCatalogoDto ParaDto(this ItemCatalogo i) => new(
         i.Id, i.Tipo, i.Nome, i.Descricao, i.Categoria, i.Preco, i.Custo, i.DuracaoMinutos,
-        i.Estoque, i.CodigoDeBarras, i.ImagemUrl, i.Ativo, i.ComissaoPercentual, i.TaxaPercentual);
+        i.Estoque, i.CodigoDeBarras, i.ImagemUrl, i.Ativo, i.ComissaoPercentual,
+        i.TaxaPercentual, i.VisivelOnline);
 
     public static void Aplicar(this ItemCatalogo i, ItemCatalogoRequest r)
     {
@@ -69,6 +70,8 @@ public static class Mapeamentos
         i.Ativo = r.IsAtivo;
         i.ComissaoPercentual = r.ComissaoPercentual;
         i.TaxaPercentual = r.TaxaPercentual;
+        // Produto não vai para a página pública de jeito nenhum: ela só agenda serviço.
+        i.VisivelOnline = r.Tipo == TipoItem.Servico && r.VisivelOnline;
     }
 
     public static AgendamentoDto ParaDto(this Agendamento a) => new(
@@ -78,7 +81,7 @@ public static class Mapeamentos
         a.Itens.Select(i => new ItemAgendadoDto(
             i.ItemCatalogoId, i.Nome, i.DuracaoMinutos, i.Quantidade, i.PrecoUnitario)).ToList(),
         a.Observacoes, a.LocalAtendimento, a.VendaId,
-        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade));
+        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem);
 
     public static SlotDto ParaDto(this SlotDisponivel s) =>
         new(s.Inicio, s.Fim, s.ResponsavelId, s.ResponsavelNome);

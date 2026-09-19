@@ -127,6 +127,7 @@ public class CatalogoRecursosTests
             CatalogoRecursos.JornadaPorPessoa,
             CatalogoRecursos.MultiUsuario,
             CatalogoRecursos.Onboarding,
+            CatalogoRecursos.PaginaOnline,
             CatalogoRecursos.PermissoesAvancadas,
             CatalogoRecursos.Vendas,
         }.OrderBy(c => c, StringComparer.Ordinal), prontos);
@@ -140,6 +141,7 @@ public class CatalogoRecursosTests
     [InlineData(CatalogoRecursos.MultiUsuario)]
     [InlineData(CatalogoRecursos.JornadaPorPessoa)]
     [InlineData(CatalogoRecursos.PermissoesAvancadas)]
+    [InlineData(CatalogoRecursos.PaginaOnline)]
     public void O_que_e_cobrado_com_402_ja_esta_pronto(string chave)
     {
         var recurso = CatalogoRecursos.Obter(chave);

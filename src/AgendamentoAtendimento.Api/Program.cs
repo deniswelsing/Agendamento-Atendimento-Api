@@ -32,6 +32,7 @@ builder.Services.AddScoped<DisponibilidadeService>();
 builder.Services.AddScoped<AssinaturaService>();
 builder.Services.AddScoped<VendaService>();
 builder.Services.AddScoped<CobrancaService>();
+builder.Services.AddScoped<PaginaPublicaService>();
 builder.Services.AddScoped<ServicoDeToken>();
 
 // ------------------------------------------------------------------ autenticação

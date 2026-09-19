@@ -45,13 +45,14 @@ public sealed record ClienteRequest(
 public sealed record ItemCatalogoDto(
     long ItemId, TipoItem Tipo, string Nome, string? Descricao, string? Categoria,
     decimal Preco, decimal Custo, int? DuracaoMinutos, int? Estoque, string? CodigoDeBarras,
-    string? ImagemUrl, bool IsAtivo, decimal ComissaoPercentual, decimal TaxaPercentual);
+    string? ImagemUrl, bool IsAtivo, decimal ComissaoPercentual, decimal TaxaPercentual,
+    bool VisivelOnline);
 
 public sealed record ItemCatalogoRequest(
     TipoItem Tipo, string Nome, string? Descricao, string? Categoria, decimal Preco,
     decimal Custo = 0, int? DuracaoMinutos = null, int? Estoque = null,
     string? CodigoDeBarras = null, string? ImagemUrl = null, bool IsAtivo = true,
-    decimal ComissaoPercentual = 0, decimal TaxaPercentual = 0);
+    decimal ComissaoPercentual = 0, decimal TaxaPercentual = 0, bool VisivelOnline = true);
 
 // ------------------------------------------------------------------ agendamentos
 public sealed record ItemAgendadoDto(long ItemId, string Nome, int DuracaoMinutos, int Quantidade, decimal PrecoUnitario);
@@ -60,7 +61,58 @@ public sealed record AgendamentoDto(
     long AgendamentoId, long ClienteId, string ClienteNome, TipoCliente TipoCliente,
     DateTimeOffset Inicio, DateTimeOffset Fim, StatusAgendamento Status,
     long? ResponsavelId, string? ResponsavelNome, IReadOnlyList<ItemAgendadoDto> Itens,
-    string? Observacoes, string? LocalAtendimento, long? VendaId, decimal ValorEstimado);
+    string? Observacoes, string? LocalAtendimento, long? VendaId, decimal ValorEstimado,
+    OrigemAgendamento Origem);
+
+// ------------------------------------------------------- página pública (admin)
+public sealed record PaginaPublicaDto(
+    bool Ativa, string Slug, string? TituloPublico, string? Mensagem, string? Endereco,
+    string? TelefoneContato, int AntecedenciaMinimaHoras, int JanelaMaximaDias,
+    bool ExigeAprovacao, bool PermiteEscolherProfissional, bool ExigeTelefone,
+    int LimiteDiarioPorCliente,
+    /// <summary>Quantos serviços do catálogo a página está oferecendo agora.</summary>
+    int ServicosPublicados,
+    /// <summary>Pedidos esperando aprovação. É o que a tela mostra como pendência.</summary>
+    int PedidosPendentes,
+    /// <summary>Endereço pronto para compartilhar, montado pelo servidor.</summary>
+    string Url);
+
+public sealed record PaginaPublicaRequest(
+    bool Ativa, string Slug, string? TituloPublico, string? Mensagem, string? Endereco,
+    string? TelefoneContato, int AntecedenciaMinimaHoras = 2, int JanelaMaximaDias = 60,
+    bool ExigeAprovacao = false, bool PermiteEscolherProfissional = true,
+    bool ExigeTelefone = true, int LimiteDiarioPorCliente = 5);
+
+public sealed record SlugDisponivelDto(string Slug, bool Disponivel, string? Motivo);
+
+// ------------------------------------------------------ página pública (cliente)
+public sealed record ServicoPublicoDto(
+    long ItemId, string Nome, string? Descricao, string? Categoria,
+    int DuracaoMinutos, decimal Preco);
+
+public sealed record ProfissionalPublicoDto(long UsuarioId, string Nome);
+
+/// <summary>
+/// O que a página mostra antes de o cliente escolher qualquer coisa. Só o que quem
+/// configurou marcou como público — nada de time, preço de custo ou dado interno.
+/// </summary>
+public sealed record PaginaPublicaInfoDto(
+    string Slug, string Titulo, string? Mensagem, string? Endereco, string? Telefone,
+    string Moeda, string FusoHorario, bool ExigeTelefone, bool PermiteEscolherProfissional,
+    bool ExigeAprovacao, int AntecedenciaMinimaHoras,
+    DateOnly PrimeiraData, DateOnly UltimaData,
+    IReadOnlyList<ServicoPublicoDto> Servicos,
+    IReadOnlyList<ProfissionalPublicoDto> Profissionais);
+
+public sealed record NovoAgendamentoPublicoRequest(
+    string Nome, string? Email, string? Telefone, IReadOnlyList<long> ItensIds,
+    DateTimeOffset Inicio, long? ResponsavelId, string? Observacoes);
+
+/// <summary>O comprovante do cliente. O código é o que ele guarda para voltar.</summary>
+public sealed record AgendamentoPublicoDto(
+    string Codigo, StatusAgendamento Status, DateTimeOffset Inicio, DateTimeOffset Fim,
+    string? ProfissionalNome, IReadOnlyList<string> Servicos, decimal ValorEstimado,
+    string Empresa, bool AguardandoAprovacao);
 
 public sealed record NovoAgendamentoRequest(
     long ClienteId, DateTimeOffset Inicio, IReadOnlyList<long> ItensIds,

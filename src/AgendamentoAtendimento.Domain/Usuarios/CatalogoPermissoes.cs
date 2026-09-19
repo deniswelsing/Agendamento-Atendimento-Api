@@ -66,6 +66,11 @@ public static class Permissoes
             new AcaoPermissao("formas", "Configurar formas de pagamento"),
         }),
         new("horarios", "Horários de funcionamento", "horarios", new[] { Ver, Editar }),
+        new("pagina-online", "Página de agendamento online", "paginaOnline", new[]
+        {
+            Ver, Editar,
+            new AcaoPermissao("aprovar", "Aprovar pedidos feitos pelo cliente"),
+        }),
         new("time", "Time", "time", new[]
         {
             Ver,

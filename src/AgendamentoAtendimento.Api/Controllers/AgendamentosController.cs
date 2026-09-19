@@ -311,6 +311,10 @@ public class AgendamentosController : ControllerBaseApi
 
     private static bool TransicaoValida(StatusAgendamento de, StatusAgendamento para) => de switch
     {
+        // Um pedido da página só sai de pendente aprovado ou recusado — nunca direto
+        // para atendimento, que passaria por cima da aprovação que o dono pediu.
+        StatusAgendamento.PendenteAprovacao => para is StatusAgendamento.Confirmado
+            or StatusAgendamento.Agendado or StatusAgendamento.Cancelado,
         StatusAgendamento.Agendado => para is StatusAgendamento.Confirmado
             or StatusAgendamento.EmAtendimento or StatusAgendamento.Cancelado
             or StatusAgendamento.NaoCompareceu,

@@ -75,7 +75,8 @@ public static class CatalogoRecursos
         new(Clientes, "Cadastro de clientes (pessoa e empresa)", GrupoAgenda, 1),
         new(Catalogo, "Catálogo de produtos e serviços", GrupoAgenda, 1),
         new(Vendas, "Vendas e recebimentos", GrupoGestao, 1),
-        new(PaginaOnline, "Página de agendamento online", GrupoAgenda, 1, Disponivel: false),
+        new(PaginaOnline, "Página de agendamento online", GrupoAgenda, 1,
+            "O cliente marca sozinho, no endereço da empresa, sem precisar ligar."),
         new(LembreteEmail, "Lembretes automáticos por e-mail", GrupoAgenda, 1, Disponivel: false),
         new(ContratosESinal, "Contratos, pré-pagamento e sinal", GrupoGestao, 1, Disponivel: false),
 

@@ -39,6 +39,12 @@ public class ItemCatalogo : EntidadeDeTenant
     /// <summary>Percentual de imposto aplicado na venda.</summary>
     public decimal TaxaPercentual { get; set; }
 
+    /// <summary>
+    /// Aparece na página pública. Serviço interno (retorno, cortesia, avaliação de
+    /// garantia) continua no catálogo sem ser oferecido a quem chega de fora.
+    /// </summary>
+    public bool VisivelOnline { get; set; } = true;
+
     public bool Agendavel => Tipo == TipoItem.Servico;
 }
 

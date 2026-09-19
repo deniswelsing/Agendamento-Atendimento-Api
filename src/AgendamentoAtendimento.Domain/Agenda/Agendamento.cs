@@ -13,6 +13,12 @@ public enum StatusAgendamento
     Concluido = 4,
     Cancelado = 5,
     NaoCompareceu = 6,
+
+    /// <summary>
+    /// Pedido feito pelo cliente na página pública, esperando alguém do time aprovar.
+    /// Já segura o horário: soltá-lo deixaria dois clientes pedirem o mesmo encaixe.
+    /// </summary>
+    PendenteAprovacao = 7,
 }
 
 /// <summary>Agendamento de atendimento para um cliente (pessoa ou empresa).</summary>
@@ -38,6 +44,15 @@ public class Agendamento : EntidadeDeTenant
 
     /// <summary>Venda gerada na conclusão do atendimento.</summary>
     public long? VendaId { get; set; }
+
+    /// <summary>Quem marcou: o time pelo app, ou o próprio cliente na página pública.</summary>
+    public OrigemAgendamento Origem { get; set; } = OrigemAgendamento.Interno;
+
+    /// <summary>
+    /// Código opaco entregue a quem marcou pela página. É com ele — e só com ele — que
+    /// o cliente consulta e desmarca depois, sem ter conta no sistema.
+    /// </summary>
+    public string? CodigoPublico { get; set; }
 
     public ICollection<AgendamentoItem> Itens { get; set; } = new List<AgendamentoItem>();
 
