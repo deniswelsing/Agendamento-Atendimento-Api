@@ -186,8 +186,31 @@ intervalo de encaixe, quantos atendimentos já existem e a lista de horários li
 pessoa do time que atende cada um**.
 
 O cálculo é a interseção da janela da empresa com a jornada de cada atendente, menos as
-pausas dos dois, menos as ausências e menos o que já está agendado. `POST /api/agendamentos`
-revalida isso antes de gravar: uma agenda desatualizada no app não cria conflito.
+pausas dos dois, menos as ausências, menos o que já está agendado — e só entre quem presta
+o serviço pedido. `POST /api/agendamentos` revalida isso antes de gravar: uma agenda
+desatualizada no app não cria conflito.
+
+### Quem presta cada serviço
+
+```
+GET /api/catalogo/itens/{id}/executores  -> { itemId, nome, executores[], abertoATodos }
+PUT /api/catalogo/itens/{id}/executores  { usuariosIds: [2, 3] }
+```
+
+Um serviço **sem executores cadastrados é aberto a qualquer atendente** — é o padrão, e é
+o que mantém agendável tudo que existia antes desta regra. Assim que alguém é marcado, a
+lista fecha: a agenda deixa de oferecer encaixe com quem não sabe fazer aquilo. Mandar
+lista vazia reabre para o time inteiro.
+
+Só quem tem `atendente` recebe serviço; aceitar outro seria prometer um encaixe que a
+agenda nunca vai oferecer.
+
+A disponibilidade filtra por `itensIds`: com dois serviços no mesmo encaixe, só aparece
+quem presta **os dois** — um encaixe é atendido por uma pessoa só. Quando parte dos
+serviços é aberta e parte restrita, só a parte restrita limita.
+
+Estar apto não basta: quem sabe fazer mas já tem compromisso naquele horário continua fora
+da lista, como sempre esteve.
 
 ## Assinatura
 
