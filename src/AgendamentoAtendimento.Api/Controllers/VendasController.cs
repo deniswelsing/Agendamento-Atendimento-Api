@@ -42,7 +42,8 @@ public class VendasController : ControllerBaseApi
             .AsNoTracking()
             .Include(v => v.Cliente)
             .Include(v => v.Vendedor)
-            .Include(v => v.Itens)
+            // O vendedor de cada item: é o nome que o checkout mostra ao lado do serviço.
+            .Include(v => v.Itens).ThenInclude(i => i.Vendedor)
             .Include(v => v.Pagamentos).ThenInclude(x => x.FormaPagamento)
             .AsQueryable();
 
@@ -109,7 +110,7 @@ public class VendasController : ControllerBaseApi
             // que o app diga outra coisa.
             VendedorId = req.VendedorId ?? agendamento?.ResponsavelId,
         };
-        await PreencherItensAsync(venda, req, ct);
+        await PreencherItensAsync(venda, req, ct, agendamento);
 
         _db.Vendas.Add(venda);
         await _db.SaveChangesAsync(ct);
@@ -143,6 +144,7 @@ public class VendasController : ControllerBaseApi
 
         // Trocar o agendamento da venda solta o antigo e prende o novo. O antigo é
         // carregado sem a checagem de "já faturado": quem o faturou foi esta venda.
+        Agendamento? agendamento;
         if (venda.AgendamentoId != req.AgendamentoId)
         {
             var anterior = await BuscarAgendamentoAsync(venda.AgendamentoId, ct);
@@ -151,11 +153,17 @@ public class VendasController : ControllerBaseApi
                 anterior.VendaId = null;
             }
 
-            var novoAgendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
-            if (novoAgendamento is not null)
+            agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
+            if (agendamento is not null)
             {
-                novoAgendamento.VendaId = venda.Id;
+                agendamento.VendaId = venda.Id;
             }
+        }
+        else
+        {
+            // Mesmo agendamento: carrega sem a checagem de "já faturado", porque quem o
+            // faturou foi esta venda. Os itens dele decidem a comissão de cada linha.
+            agendamento = await BuscarAgendamentoAsync(venda.AgendamentoId, ct);
         }
 
         venda.ClienteId = req.ClienteId;
@@ -164,7 +172,7 @@ public class VendasController : ControllerBaseApi
         // Sem isso o checkout nunca conseguiria tirar a comissão de alguém.
         venda.VendedorId = req.VendedorId;
         venda.Itens.Clear();
-        await PreencherItensAsync(venda, req, ct);
+        await PreencherItensAsync(venda, req, ct, agendamento);
 
         await _db.SaveChangesAsync(ct);
         var completa = await CarregarAsync(id, ct);
@@ -279,14 +287,26 @@ public class VendasController : ControllerBaseApi
         }
 
         return NaoNulo(
-            await _db.Agendamentos.FirstOrDefaultAsync(a => a.Id == id, ct),
+            // Os itens vêm junto: é deles que sai quem prestou cada serviço, e é isso
+            // que decide para quem vai a comissão de cada linha da venda.
+            await _db.Agendamentos.Include(a => a.Itens)
+                .FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
     }
 
-    private async Task PreencherItensAsync(Venda venda, VendaRequest req, CancellationToken ct)
+    private async Task PreencherItensAsync(
+        Venda venda, VendaRequest req, CancellationToken ct, Agendamento? agendamento = null)
     {
         var ids = req.Itens.Select(i => i.ItemId).Distinct().ToList();
         var catalogo = await _db.ItensCatalogo.Where(i => ids.Contains(i.Id)).ToListAsync(ct);
+
+        // Quem prestou cada serviço no atendimento. É daqui que sai a comissão: pagar
+        // tudo a quem abriu a venda daria o dinheiro à pessoa errada quando dois
+        // funcionários atenderam o mesmo cliente.
+        var quemPrestou = agendamento?.Itens
+            .Where(i => (i.ResponsavelId ?? agendamento.ResponsavelId) is not null)
+            .GroupBy(i => i.ItemCatalogoId)
+            .ToDictionary(g => g.Key, g => (g.First().ResponsavelId ?? agendamento.ResponsavelId)!.Value);
 
         foreach (var pedido in req.Itens)
         {
@@ -319,6 +339,12 @@ public class VendasController : ControllerBaseApi
                 // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
                 // foi vendido nem o que foi prometido a quem atendeu.
                 ComissaoPercentual = item.ComissaoPercentual,
+                // Quem o pedido mandou; senão, quem prestou o serviço no atendimento.
+                // Nulo cai no vendedor da venda na hora de somar.
+                VendedorId = pedido.VendedorId
+                    ?? (quemPrestou is not null && quemPrestou.TryGetValue(item.Id, out var quem)
+                        ? quem
+                        : null),
             });
         }
 
@@ -331,7 +357,8 @@ public class VendasController : ControllerBaseApi
         _db.Vendas
             .Include(v => v.Cliente)
             .Include(v => v.Vendedor)
-            .Include(v => v.Itens)
+            // O vendedor de cada item: é o nome que o checkout mostra ao lado do serviço.
+            .Include(v => v.Itens).ThenInclude(i => i.Vendedor)
             .Include(v => v.Pagamentos).ThenInclude(p => p.FormaPagamento)
             .FirstOrDefaultAsync(v => v.Id == id, ct);
 }

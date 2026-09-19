@@ -5,12 +5,42 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
 
+/// <summary>
+/// Um serviço dentro de um encaixe, já com quem vai prestá-lo e quando. Os serviços são
+/// sequenciais, então pessoas diferentes podem pegar serviços diferentes do mesmo
+/// atendimento sem conflito.
+/// </summary>
+/// <summary>Uma pessoa do time, como a grade a devolve.</summary>
+public sealed record PessoaResumo(long UsuarioId, string Nome);
+
+public sealed record AtribuicaoDeServico(
+    long ItemCatalogoId,
+    string Nome,
+    DateTimeOffset Inicio,
+    DateTimeOffset Fim,
+    long ResponsavelId,
+    string ResponsavelNome,
+    /// <summary>
+    /// Todo mundo que poderia prestar este serviço neste horário — o escolhido inclusive.
+    ///
+    /// Vem a lista, e não só a contagem, porque quem marca pode querer outra pessoa: sem
+    /// os nomes aqui a tela teria de perguntar de novo ao servidor a cada troca.
+    /// </summary>
+    IReadOnlyList<PessoaResumo> Candidatos)
+{
+    /// <summary>Um significa que não há escolha a fazer: a tela marca e segue.</summary>
+    public int Alternativas => Candidatos.Count;
+}
+
 /// <summary>Encaixe livre devolvido para o app. O app não calcula nada: só exibe.</summary>
 public sealed record SlotDisponivel(
     DateTimeOffset Inicio,
     DateTimeOffset Fim,
+    /// <summary>Quem responde pelo encaixe — quem presta o primeiro serviço.</summary>
     long ResponsavelId,
-    string ResponsavelNome);
+    string ResponsavelNome,
+    /// <summary>Um por serviço, na ordem em que acontecem.</summary>
+    IReadOnlyList<AtribuicaoDeServico> Atribuicoes);
 
 /// <summary>Como está a agenda de um dia inteiro — usado pela visão de dia do app.</summary>
 public sealed record DiaDaAgenda(
@@ -23,7 +53,18 @@ public sealed record DiaDaAgenda(
     string? MotivoFechado,
     int IntervaloSlotMinutos,
     IReadOnlyList<SlotDisponivel> Livres,
-    int TotalAgendamentos);
+    int TotalAgendamentos,
+    /// <summary>
+    /// Quando o dia não tem encaixe, o primeiro dia que tem — para a tela poder dizer
+    /// "não hoje, mas na quinta" em vez de só mostrar vazio. Nulo quando há encaixe,
+    /// ou quando nenhum dia à frente serve.
+    /// </summary>
+    DateOnly? ProximaData = null,
+    /// <summary>
+    /// Por que o dia não tem encaixe, quando o motivo não é a empresa estar fechada —
+    /// tipicamente ninguém que preste o serviço está livre.
+    /// </summary>
+    string? MotivoSemEncaixe = null);
 
 /// <summary>
 /// Motor de disponibilidade: interseção entre a janela da empresa e a jornada de cada
@@ -42,7 +83,9 @@ public class DisponibilidadeService
         int duracaoMinutos,
         long? responsavelId = null,
         CancellationToken ct = default,
-        IReadOnlyCollection<long>? itensIds = null)
+        IReadOnlyCollection<long>? itensIds = null,
+        // Agendamento a desconsiderar — é o que faz reagendar não esbarrar em si mesmo.
+        long? ignorarAgendamentoId = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -55,6 +98,10 @@ public class DisponibilidadeService
             .FirstOrDefaultAsync(e => e.Data == data, ct);
 
         var agendamentosDoDia = await AgendamentosDoDiaAsync(data, ct);
+        if (ignorarAgendamentoId is { } ignorar)
+        {
+            agendamentosDoDia = agendamentosDoDia.Where(a => a.Id != ignorar).ToList();
+        }
 
         // Exceção de data manda sobre o horário padrão.
         var fechado = excecaoEmpresa?.Fechado ?? !(horarioEmpresa?.Aberto ?? false);
@@ -72,72 +119,298 @@ public class DisponibilidadeService
                 intervalo, Array.Empty<SlotDisponivel>(), agendamentosDoDia.Count);
         }
 
-        var duracao = duracaoMinutos > 0 ? duracaoMinutos : intervalo;
         var atendentes = await AtendentesAsync(responsavelId, ct);
-
-        // Quem não sabe prestar o serviço não aparece como encaixe, por mais livre que
-        // esteja a agenda dele.
-        atendentes = await FiltrarPorHabilidadeAsync(atendentes, itensIds, ct);
         var jornadas = await JornadasAsync(diaDaSemana, ct);
         var ausencias = await AusenciasAsync(data, ct);
 
-        var livres = new List<SlotDisponivel>();
-        foreach (var atendente in atendentes)
+        // A sequência de serviços do encaixe. Sem itens, é um bloco só, de qualquer
+        // duração pedida — é como as telas que ainda não escolheram serviço perguntam.
+        var sequencia = await SequenciaAsync(itensIds, duracaoMinutos > 0 ? duracaoMinutos : intervalo, ct);
+        var duracaoTotal = sequencia.Sum(x => x.Duracao);
+
+        // Quem pode prestar cada serviço. Serviço sem ninguém marcado é aberto a todos.
+        var habilitados = new List<List<Usuario>>();
+        foreach (var etapa in sequencia)
         {
-            var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == atendente.Id);
-            if (jornada is null || !jornada.Trabalha)
-            {
-                continue;
-            }
+            habilitados.Add(etapa.ItemCatalogoId is { } id
+                ? await FiltrarPorHabilidadeAsync(atendentes, new[] { id }, ct)
+                : atendentes);
+        }
 
-            // A agenda vale pela interseção da jornada com a janela da empresa.
-            var inicioJanela = Maior(abertura.Value, jornada.Inicio);
-            var fimJanela = Menor(fechamento.Value, jornada.Fim);
-            if (inicioJanela >= fimJanela)
+        // Ocupação por pessoa: a união das janelas dos itens dela. Usar a janela inteira
+        // do agendamento tiraria da grade quem presta só o segundo serviço durante o
+        // primeiro — que é exatamente o caso que esta mudança existe para permitir.
+        var ocupacao = new Dictionary<long, List<(DateTimeOffset Inicio, DateTimeOffset Fim)>>();
+        foreach (var agendamento in agendamentosDoDia)
+        {
+            foreach (var (usuarioId, ini, fimOcup) in agendamento.Ocupacoes())
             {
-                continue;
-            }
-
-            var ocupados = agendamentosDoDia
-                .Where(a => a.ResponsavelId == atendente.Id)
-                .Select(a => (a.Inicio, a.Fim))
-                .ToList();
-
-            foreach (var ausencia in ausencias.Where(a => a.UsuarioId == atendente.Id))
-            {
-                var iniAusencia = ausencia.DiaInteiro ? TimeOnly.MinValue : ausencia.Inicio ?? TimeOnly.MinValue;
-                var fimAusencia = ausencia.DiaInteiro ? TimeOnly.MaxValue : ausencia.Fim ?? TimeOnly.MaxValue;
-                ocupados.Add((Combinar(data, iniAusencia), Combinar(data, fimAusencia)));
-            }
-
-            for (var t = inicioJanela; AdicionarMinutos(t, duracao) <= fimJanela; t = AdicionarMinutos(t, intervalo))
-            {
-                var fimSlot = AdicionarMinutos(t, duracao);
-                if (ColideComPausa(t, fimSlot, pausaInicio, pausaFim) ||
-                    ColideComPausa(t, fimSlot, jornada.PausaInicio, jornada.PausaFim))
+                if (!ocupacao.TryGetValue(usuarioId, out var lista))
                 {
-                    continue;
+                    ocupacao[usuarioId] = lista = new List<(DateTimeOffset, DateTimeOffset)>();
                 }
 
-                var inicioAbsoluto = Combinar(data, t);
-                var fimAbsoluto = Combinar(data, fimSlot);
-                if (ocupados.Any(o => inicioAbsoluto < o.Item2 && fimAbsoluto > o.Item1))
-                {
-                    continue;
-                }
-
-                livres.Add(new SlotDisponivel(inicioAbsoluto, fimAbsoluto, atendente.Id, atendente.Nome));
+                lista.Add((ini, fimOcup));
             }
         }
 
-        var ordenados = livres
-            .OrderBy(s => s.Inicio)
-            .ThenBy(s => s.ResponsavelNome)
-            .ToList();
+        foreach (var ausencia in ausencias)
+        {
+            var iniAusencia = ausencia.DiaInteiro ? TimeOnly.MinValue : ausencia.Inicio ?? TimeOnly.MinValue;
+            var fimAusencia = ausencia.DiaInteiro ? TimeOnly.MaxValue : ausencia.Fim ?? TimeOnly.MaxValue;
+            if (!ocupacao.TryGetValue(ausencia.UsuarioId, out var lista))
+            {
+                ocupacao[ausencia.UsuarioId] = lista = new List<(DateTimeOffset, DateTimeOffset)>();
+            }
+
+            lista.Add((Combinar(data, iniAusencia), Combinar(data, fimAusencia)));
+        }
+
+        bool PodeAtender(Usuario quem, TimeOnly de, TimeOnly ate)
+        {
+            var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == quem.Id);
+            if (jornada is null || !jornada.Trabalha)
+            {
+                return false;
+            }
+
+            if (de < Maior(abertura.Value, jornada.Inicio) || ate > Menor(fechamento.Value, jornada.Fim))
+            {
+                return false;
+            }
+
+            if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
+                ColideComPausa(de, ate, jornada.PausaInicio, jornada.PausaFim))
+            {
+                return false;
+            }
+
+            var iniAbs = Combinar(data, de);
+            var fimAbs = Combinar(data, ate);
+            return !ocupacao.TryGetValue(quem.Id, out var ocupados) ||
+                   !ocupados.Any(o => iniAbs < o.Fim && fimAbs > o.Inicio);
+        }
+
+        var livres = new List<SlotDisponivel>();
+        var inicioDoDia = Maior(abertura.Value, TimeOnly.MinValue);
+
+        for (var t = inicioDoDia; AdicionarMinutos(t, duracaoTotal) <= fechamento.Value;
+             t = AdicionarMinutos(t, intervalo))
+        {
+            var atribuicoes = MontarCadeia(sequencia, habilitados, t, data, PodeAtender);
+            if (atribuicoes is null)
+            {
+                continue;
+            }
+
+            livres.Add(new SlotDisponivel(
+                atribuicoes[0].Inicio,
+                atribuicoes[^1].Fim,
+                atribuicoes[0].ResponsavelId,
+                atribuicoes[0].ResponsavelNome,
+                atribuicoes));
+        }
+
+        var ordenados = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
+
+        var motivo = ordenados.Count > 0
+            ? null
+            : habilitados.Any(h => h.Count == 0)
+                ? "Ninguém do time presta esse serviço."
+                : "Ninguém que presta esse serviço está livre neste dia.";
 
         return new DiaDaAgenda(
             data, true, abertura, fechamento, pausaInicio, pausaFim, null,
-            intervalo, ordenados, agendamentosDoDia.Count);
+            intervalo, ordenados, agendamentosDoDia.Count, null, motivo);
+    }
+
+    /// <summary>
+    /// Encaixa a sequência a partir de <paramref name="inicio"/>, escolhendo quem presta
+    /// cada serviço. Devolve null quando algum serviço fica sem ninguém — é o que faz o
+    /// horário não ser oferecido.
+    ///
+    /// A escolha prefere quem já pegou o serviço anterior: o cliente não trocar de mãos
+    /// sem necessidade é melhor atendimento, e não custa encaixe nenhum.
+    /// </summary>
+    private static List<AtribuicaoDeServico>? MontarCadeia(
+        IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao)> sequencia,
+        IReadOnlyList<List<Usuario>> habilitados,
+        TimeOnly inicio,
+        DateOnly data,
+        Func<Usuario, TimeOnly, TimeOnly, bool> podeAtender)
+    {
+        var atribuicoes = new List<AtribuicaoDeServico>(sequencia.Count);
+        var cursor = inicio;
+        Usuario? anterior = null;
+
+        for (var i = 0; i < sequencia.Count; i++)
+        {
+            var etapa = sequencia[i];
+            var fim = AdicionarMinutos(cursor, etapa.Duracao);
+
+            var candidatos = habilitados[i].Where(quem => podeAtender(quem, cursor, fim)).ToList();
+            if (candidatos.Count == 0)
+            {
+                return null;
+            }
+
+            var escolhido = candidatos.FirstOrDefault(quem => quem.Id == anterior?.Id) ?? candidatos[0];
+
+            atribuicoes.Add(new AtribuicaoDeServico(
+                etapa.ItemCatalogoId ?? 0, etapa.Nome,
+                Combinar(data, cursor), Combinar(data, fim),
+                escolhido.Id, escolhido.Nome,
+                candidatos.Select(c => new PessoaResumo(c.Id, c.Nome)).ToList()));
+
+            anterior = escolhido;
+            cursor = fim;
+        }
+
+        return atribuicoes;
+    }
+
+    /// <summary>Os serviços pedidos, na ordem, com nome e duração.</summary>
+    private async Task<IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao)>> SequenciaAsync(
+        IReadOnlyCollection<long>? itensIds, int duracaoPadrao, CancellationToken ct)
+    {
+        if (itensIds is null || itensIds.Count == 0)
+        {
+            return new[] { ((long?)null, "Atendimento", duracaoPadrao) };
+        }
+
+        var itens = await _db.ItensCatalogo.AsNoTracking()
+            .Where(i => itensIds.Contains(i.Id))
+            .ToListAsync(ct);
+
+        // Respeita a ordem em que os serviços foram pedidos: é ela que define a sequência.
+        return itensIds
+            .Select(id => itens.FirstOrDefault(i => i.Id == id))
+            .Where(i => i is not null)
+            .Select(i => ((long?)i!.Id, i.Nome, Math.Max(1, i.DuracaoMinutos ?? duracaoPadrao)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Esta pessoa pode prestar este serviço exatamente nesta janela?
+    ///
+    /// É a checagem direta, sem passar pela grade: a grade só tem horários nas fronteiras
+    /// do intervalo, e o segundo serviço de um atendimento começa quando o primeiro acaba
+    /// — quase nunca numa fronteira.
+    /// </summary>
+    public async Task<bool> PodePrestarAsync(
+        long usuarioId,
+        long? itemCatalogoId,
+        DateTimeOffset inicio,
+        DateTimeOffset fim,
+        long? ignorarAgendamentoId = null,
+        CancellationToken ct = default)
+    {
+        var data = DateOnly.FromDateTime(inicio.UtcDateTime);
+
+        var quem = await _db.Usuarios.AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == usuarioId && u.Ativo && u.Atendente, ct);
+        if (quem is null)
+        {
+            return false;
+        }
+
+        // Sabe fazer? Serviço sem executor marcado é aberto a qualquer atendente.
+        if (itemCatalogoId is { } itemId)
+        {
+            var habilitados = await FiltrarPorHabilidadeAsync(
+                new List<Usuario> { quem }, new[] { itemId }, ct);
+            if (habilitados.Count == 0)
+            {
+                return false;
+            }
+        }
+
+        var diaDaSemana = data.DayOfWeek;
+        var horarioEmpresa = await _db.HorariosFuncionamento.AsNoTracking()
+            .FirstOrDefaultAsync(h => h.DiaDaSemana == diaDaSemana, ct);
+        var excecaoEmpresa = await _db.ExcecoesHorarioFuncionamento.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.Data == data, ct);
+
+        if (excecaoEmpresa?.Fechado ?? !(horarioEmpresa?.Aberto ?? false))
+        {
+            return false;
+        }
+
+        var abertura = excecaoEmpresa?.Abertura ?? horarioEmpresa?.Abertura;
+        var fechamento = excecaoEmpresa?.Fechamento ?? horarioEmpresa?.Fechamento;
+        if (abertura is null || fechamento is null)
+        {
+            return false;
+        }
+
+        var jornada = (await JornadasAsync(diaDaSemana, ct))
+            .FirstOrDefault(j => j.UsuarioId == usuarioId);
+        if (jornada is null || !jornada.Trabalha)
+        {
+            return false;
+        }
+
+        var de = TimeOnly.FromDateTime(inicio.UtcDateTime);
+        var ate = TimeOnly.FromDateTime(fim.UtcDateTime);
+
+        if (de < Maior(abertura.Value, jornada.Inicio) || ate > Menor(fechamento.Value, jornada.Fim))
+        {
+            return false;
+        }
+
+        var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
+        var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
+        if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
+            ColideComPausa(de, ate, jornada.PausaInicio, jornada.PausaFim))
+        {
+            return false;
+        }
+
+        foreach (var ausencia in await AusenciasAsync(data, ct))
+        {
+            if (ausencia.UsuarioId != usuarioId)
+            {
+                continue;
+            }
+
+            var iniAus = ausencia.DiaInteiro ? TimeOnly.MinValue : ausencia.Inicio ?? TimeOnly.MinValue;
+            var fimAus = ausencia.DiaInteiro ? TimeOnly.MaxValue : ausencia.Fim ?? TimeOnly.MaxValue;
+            if (de < fimAus && ate > iniAus)
+            {
+                return false;
+            }
+        }
+
+        // Ocupação por serviço: quem presta só o segundo continua livre durante o primeiro.
+        var agendamentos = await AgendamentosDoDiaAsync(data, ct);
+        return !agendamentos
+            .Where(a => a.Id != (ignorarAgendamentoId ?? 0))
+            .SelectMany(a => a.Ocupacoes())
+            .Any(o => o.UsuarioId == usuarioId && inicio < o.Fim && fim > o.Inicio);
+    }
+
+    /// <summary>
+    /// O primeiro dia com encaixe a partir de <paramref name="de"/>. É o que a tela usa
+    /// para dizer "aqui não, mas na quinta" em vez de mostrar um vazio sem saída.
+    /// </summary>
+    public async Task<(DateOnly Data, SlotDisponivel Slot)?> ProximaOportunidadeAsync(
+        DateOnly de,
+        IReadOnlyCollection<long> itensIds,
+        long? responsavelId = null,
+        int limiteDias = 30,
+        CancellationToken ct = default)
+    {
+        for (var i = 0; i <= limiteDias; i++)
+        {
+            var data = de.AddDays(i);
+            var dia = await ObterDiaAsync(data, 0, responsavelId, ct, itensIds);
+            if (dia.Livres.Count > 0)
+            {
+                return (data, dia.Livres[0]);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Resumo por dia usado pelas visões de semana e de mês.</summary>
@@ -168,25 +441,38 @@ public class DisponibilidadeService
         long? ignorarAgendamentoId = null, CancellationToken ct = default,
         IReadOnlyCollection<long>? itensIds = null)
     {
+        var cadeia = await MontarAtribuicoesAsync(
+            inicio, itensIds, responsavelId, ignorarAgendamentoId, (int)(fim - inicio).TotalMinutes, ct);
+
+        return cadeia is not null;
+    }
+
+    /// <summary>
+    /// A cadeia de atribuições para um horário exato, ou null quando ele não cabe.
+    /// É o que o controller usa para gravar quem presta cada serviço — e é a mesma conta
+    /// que montou a grade, então o que a tela ofereceu é o que o servidor aceita.
+    ///
+    /// <paramref name="ignorarAgendamentoId"/> tira um agendamento da conta: é o que faz
+    /// reagendar ou trocar o responsável não esbarrar no próprio compromisso.
+    /// </summary>
+    public async Task<IReadOnlyList<AtribuicaoDeServico>?> MontarAtribuicoesAsync(
+        DateTimeOffset inicio,
+        IReadOnlyCollection<long>? itensIds,
+        long? responsavelId = null,
+        long? ignorarAgendamentoId = null,
+        int duracaoMinutos = 0,
+        CancellationToken ct = default)
+    {
         var data = DateOnly.FromDateTime(inicio.UtcDateTime);
-        // Passa os itens: gravar um agendamento com quem não presta o serviço seria furar
-        // pela porta dos fundos a mesma regra que a tela respeita.
         var dia = await ObterDiaAsync(
-            data, (int)(fim - inicio).TotalMinutes, responsavelId, ct, itensIds);
+            data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId);
+
         if (!dia.Aberto)
         {
-            return false;
+            return null;
         }
 
-        var conflita = await _db.Agendamentos
-            .AsNoTracking()
-            .AnyAsync(a =>
-                a.ResponsavelId == responsavelId &&
-                a.Status != StatusAgendamento.Cancelado &&
-                a.Id != (ignorarAgendamentoId ?? 0) &&
-                a.Inicio < fim && a.Fim > inicio, ct);
-
-        return !conflita && dia.Livres.Any(s => s.Inicio == inicio && s.ResponsavelId == responsavelId);
+        return dia.Livres.FirstOrDefault(s => s.Inicio == inicio)?.Atribuicoes;
     }
 
     private async Task<List<Agendamento>> AgendamentosDoDiaAsync(DateOnly data, CancellationToken ct)
@@ -195,6 +481,9 @@ public class DisponibilidadeService
         var fimDia = inicioDia.AddDays(1);
         return await _db.Agendamentos
             .AsNoTracking()
+            // Os itens vêm junto porque a ocupação é por serviço, não pelo agendamento
+            // inteiro: quem presta só o segundo serviço fica livre durante o primeiro.
+            .Include(a => a.Itens)
             .Where(a => a.Inicio < fimDia && a.Fim > inicioDia && a.Status != StatusAgendamento.Cancelado)
             .ToListAsync(ct);
     }

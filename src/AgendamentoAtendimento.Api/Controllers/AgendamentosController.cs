@@ -53,7 +53,7 @@ public class AgendamentosController : ControllerBaseApi
             .AsNoTracking()
             .Include(a => a.Cliente)
             .Include(a => a.Responsavel)
-            .Include(a => a.Itens)
+            .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
             .Where(a => a.Inicio < fim && a.Fim > inicio)
             .Where(a => responsavelId == null || a.ResponsavelId == responsavelId)
             .Where(a => clienteId == null || a.ClienteId == clienteId)
@@ -85,6 +85,23 @@ public class AgendamentosController : ControllerBaseApi
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
         var dia = await _disponibilidade.ObterDiaAsync(data, duracao, responsavelId, ct, itens);
+
+        // Dia sem encaixe não é beco sem saída: o servidor já diz onde há o próximo.
+        // Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem sabe
+        // quem presta o quê.
+        if (dia.Livres.Count == 0 && itens.Length > 0)
+        {
+            var proxima = await _disponibilidade.ProximaOportunidadeAsync(
+                data.AddDays(1), itens, responsavelId, ct: ct);
+
+            if (proxima is { } achado)
+            {
+                return Ok(dia.ParaDto() with
+                {
+                    Proxima = new ProximaOportunidadeDto(achado.Data, achado.Slot.ParaDto()),
+                });
+            }
+        }
         return Ok(dia.ParaDto());
     }
 
@@ -137,27 +154,24 @@ public class AgendamentosController : ControllerBaseApi
                 "Algum serviço não existe ou está inativo.", "SERVICO_INVALIDO");
         }
 
-        var duracao = servicos.Sum(s => s.DuracaoMinutos ?? 0);
         var inicio = req.Inicio.ToUniversalTime();
-        var fim = inicio.AddMinutes(duracao);
 
-        var responsavelId = req.ResponsavelId
-            ?? await EscolherResponsavelLivreAsync(inicio, duracao, ct, req.ItensIds);
+        // Quem presta cada serviço: o que veio no pedido, e o resto o servidor resolve.
+        // É a mesma conta que montou a grade, então o que a tela ofereceu é o que entra.
+        var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
+            inicio, req.ItensIds, req.ResponsavelId, null, 0, ct);
 
-        if (responsavelId is null)
-        {
-            throw new RegraDeNegocioException(
-                "Ninguém do time está livre nesse horário.", "SEM_RESPONSAVEL");
-        }
-
-        // Revalida no servidor: o app pode ter mostrado uma agenda desatualizada.
-        if (!await _disponibilidade.EstaLivreAsync(
-                inicio, fim, responsavelId.Value, null, ct, req.ItensIds))
+        if (atribuicoes is null)
         {
             throw new RegraDeNegocioException(
                 "Esse horário acabou de ser ocupado ou está fora da janela de atendimento.",
                 "HORARIO_INDISPONIVEL");
         }
+
+        atribuicoes = AplicarEscolhas(atribuicoes, req.ItensIds, req.ResponsaveisPorItem);
+        await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, null, ct);
+
+        var fim = atribuicoes[^1].Fim;
 
         var agendamento = new Agendamento
         {
@@ -165,20 +179,26 @@ public class AgendamentosController : ControllerBaseApi
             Inicio = inicio,
             Fim = fim,
             Status = StatusAgendamento.Agendado,
-            ResponsavelId = responsavelId,
+            // Quem responde pelo atendimento é quem presta o primeiro serviço.
+            ResponsavelId = atribuicoes[0].ResponsavelId,
             Observacoes = req.Observacoes,
             LocalAtendimento = req.LocalAtendimento,
         };
 
-        foreach (var servico in servicos)
+        var ordem = 0;
+        foreach (var id in req.ItensIds)
         {
+            var servico = servicos.First(x => x.Id == id);
             agendamento.Itens.Add(new AgendamentoItem
             {
                 ItemCatalogoId = servico.Id,
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
+                Ordem = ordem,
+                ResponsavelId = atribuicoes[ordem].ResponsavelId,
             });
+            ordem++;
         }
 
         _db.Agendamentos.Add(agendamento);
@@ -212,37 +232,45 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
         }
 
-        var duracao = servicos.Sum(s => s.DuracaoMinutos ?? 0);
         var inicio = req.Inicio.ToUniversalTime();
-        var fim = inicio.AddMinutes(duracao);
-        var responsavelId = req.ResponsavelId ?? agendamento.ResponsavelId;
 
-        if (responsavelId is null ||
-            !await _disponibilidade.EstaLivreAsync(
-                inicio, fim, responsavelId.Value, id, ct, req.ItensIds))
+        // Ignora o próprio agendamento na conta: reagendar para o mesmo horário não pode
+        // esbarrar no compromisso que está sendo movido.
+        var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
+            inicio, req.ItensIds, req.ResponsavelId, id, 0, ct);
+
+        if (atribuicoes is null)
         {
             throw new RegraDeNegocioException(
-                "Esse horário não está disponível para o responsável escolhido.",
+                "Esse horário não está disponível para os serviços escolhidos.",
                 "HORARIO_INDISPONIVEL");
         }
 
+        atribuicoes = AplicarEscolhas(atribuicoes, req.ItensIds, req.ResponsaveisPorItem);
+        await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, id, ct);
+
         agendamento.ClienteId = req.ClienteId;
         agendamento.Inicio = inicio;
-        agendamento.Fim = fim;
-        agendamento.ResponsavelId = responsavelId;
+        agendamento.Fim = atribuicoes[^1].Fim;
+        agendamento.ResponsavelId = atribuicoes[0].ResponsavelId;
         agendamento.Observacoes = req.Observacoes;
         agendamento.LocalAtendimento = req.LocalAtendimento;
 
         agendamento.Itens.Clear();
-        foreach (var servico in servicos)
+        var ordem = 0;
+        foreach (var itemId in req.ItensIds)
         {
+            var servico = servicos.First(x => x.Id == itemId);
             agendamento.Itens.Add(new AgendamentoItem
             {
                 ItemCatalogoId = servico.Id,
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
+                Ordem = ordem,
+                ResponsavelId = atribuicoes[ordem].ResponsavelId,
             });
+            ordem++;
         }
 
         await _db.SaveChangesAsync(ct);
@@ -338,19 +366,125 @@ public class AgendamentosController : ControllerBaseApi
     }
 
     /// <summary>Quando o app manda "quem estiver livre", o servidor escolhe.</summary>
-    private async Task<long?> EscolherResponsavelLivreAsync(
-        DateTimeOffset inicio, int duracao, CancellationToken ct,
-        IReadOnlyCollection<long>? itensIds = null)
+    /// <summary>
+    /// Troca, na cadeia que o servidor montou, quem o pedido escolheu a dedo. Posição
+    /// nula mantém a escolha do servidor — é o caso de quem só quis mexer num serviço.
+    /// </summary>
+    /// <summary>
+    /// Troca quem presta um serviço já marcado, sem mexer no resto do atendimento.
+    ///
+    /// A pessoa nova precisa prestar aquele serviço e estar livre na janela dele. Nulo
+    /// devolve o serviço para quem responde pelo atendimento.
+    /// </summary>
+    [HttpPatch("{id:long}/itens/{itemId:long}/responsavel")]
+    [RequerPermissao("agenda.editar")]
+    public async Task<ActionResult<AgendamentoDto>> TrocarResponsavelDoItem(
+        long id, long itemId, TrocarResponsavelRequest req, CancellationToken ct)
     {
-        var data = DateOnly.FromDateTime(inicio.UtcDateTime);
-        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, null, ct, itensIds);
-        return dia.Livres.FirstOrDefault(s => s.Inicio == inicio)?.ResponsavelId;
+        var agendamento = NaoNulo(
+            await _db.Agendamentos.Include(a => a.Itens).FirstOrDefaultAsync(a => a.Id == id, ct),
+            "Agendamento não encontrado.");
+
+        if (agendamento.Status is StatusAgendamento.Cancelado)
+        {
+            throw new RegraDeNegocioException(
+                "Agendamento cancelado não muda de responsável.", "STATUS_FINAL");
+        }
+
+        var item = NaoNulo(
+            agendamento.Itens.FirstOrDefault(i => i.Id == itemId),
+            "Serviço não encontrado neste agendamento.");
+
+        var janela = agendamento.Janelas().First(j => j.Item.Id == itemId);
+
+        if (req.ResponsavelId is { } novo)
+        {
+            await ValidarEscolhasAsync(
+                new[]
+                {
+                    new AtribuicaoDeServico(
+                        item.ItemCatalogoId, item.Nome, janela.Inicio, janela.Fim,
+                        novo, string.Empty, Array.Empty<PessoaResumo>()),
+                },
+                janela.Inicio, new[] { item.ItemCatalogoId }, id, ct);
+        }
+
+        item.ResponsavelId = req.ResponsavelId;
+
+        // Quem responde pelo atendimento é quem presta o primeiro serviço: trocar o
+        // primeiro troca o dono, senão a agenda listaria o compromisso no nome errado.
+        var primeiro = agendamento.Itens.OrderBy(i => i.Ordem).ThenBy(i => i.Id).First();
+        agendamento.ResponsavelId = primeiro.ResponsavelId ?? agendamento.ResponsavelId;
+
+        await _db.SaveChangesAsync(ct);
+
+        var completo = await CarregarAsync(id, ct);
+        return Ok(completo!.ParaDto());
+    }
+
+    private static IReadOnlyList<AtribuicaoDeServico> AplicarEscolhas(
+        IReadOnlyList<AtribuicaoDeServico> automaticas,
+        IReadOnlyList<long> itensIds,
+        IReadOnlyList<long?>? escolhidos)
+    {
+        if (escolhidos is null || escolhidos.Count == 0)
+        {
+            return automaticas;
+        }
+
+        if (escolhidos.Count != itensIds.Count)
+        {
+            throw new RegraDeNegocioException(
+                "A lista de responsáveis precisa ter um item para cada serviço.",
+                "RESPONSAVEIS_INVALIDOS");
+        }
+
+        return automaticas
+            .Select((a, i) => escolhidos[i] is { } escolhido
+                ? a with { ResponsavelId = escolhido, ResponsavelNome = string.Empty }
+                : a)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Confere quem foi escolhido a dedo: tem de prestar aquele serviço e estar livre na
+    /// janela dele. Sem isto, mandar um id qualquer furaria a regra pela porta dos fundos.
+    /// </summary>
+    private async Task ValidarEscolhasAsync(
+        IReadOnlyList<AtribuicaoDeServico> atribuicoes,
+        DateTimeOffset inicio,
+        IReadOnlyList<long> itensIds,
+        long? ignorarAgendamentoId,
+        CancellationToken ct)
+    {
+        foreach (var atribuicao in atribuicoes)
+        {
+            // Checagem direta, não pela grade: a grade só tem horários nas fronteiras do
+            // intervalo, e o segundo serviço começa quando o primeiro acaba.
+            var pode = await _disponibilidade.PodePrestarAsync(
+                atribuicao.ResponsavelId,
+                atribuicao.ItemCatalogoId == 0 ? null : atribuicao.ItemCatalogoId,
+                atribuicao.Inicio, atribuicao.Fim, ignorarAgendamentoId, ct);
+
+            if (!pode)
+            {
+                var pessoa = await _db.Usuarios.AsNoTracking()
+                    .Where(u => u.Id == atribuicao.ResponsavelId)
+                    .Select(u => u.Nome)
+                    .FirstOrDefaultAsync(ct) ?? "A pessoa escolhida";
+
+                throw new RegraDeNegocioException(
+                    $"{pessoa} não pode atender \"{atribuicao.Nome}\" nesse horário.",
+                    "RESPONSAVEL_INDISPONIVEL");
+            }
+        }
     }
 
     private Task<Agendamento?> CarregarAsync(long id, CancellationToken ct) =>
         _db.Agendamentos
             .Include(a => a.Cliente)
             .Include(a => a.Responsavel)
-            .Include(a => a.Itens)
+            // Cada item traz quem o presta: é o nome que a tela mostra ao lado do serviço.
+            .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
             .FirstOrDefaultAsync(a => a.Id == id, ct);
 }

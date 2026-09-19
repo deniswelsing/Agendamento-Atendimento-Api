@@ -54,9 +54,28 @@ public class Venda : EntidadeDeTenant
     /// O que a venda gera de comissão. Só faz sentido com vendedor: comissão sem alguém
     /// para receber é número solto.
     /// </summary>
-    public decimal TotalComissao => VendedorId is null
-        ? 0m
-        : decimal.Round(Itens.Sum(i => i.ComissaoValor), 2, MidpointRounding.AwayFromZero);
+    /// <summary>
+    /// O que a empresa paga de comissão nesta venda. Conta item a item, porque cada um
+    /// pode ter ido para uma pessoa diferente — item sem ninguém não gera comissão.
+    /// </summary>
+    public decimal TotalComissao => decimal.Round(
+        Itens.Where(i => (i.VendedorId ?? VendedorId) is not null).Sum(i => i.ComissaoValor),
+        2, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// Quanto cada pessoa leva. É o que o financeiro precisa quando dois funcionários
+    /// atenderam o mesmo cliente — somar tudo num nome só pagaria a pessoa errada.
+    /// </summary>
+    public IReadOnlyList<(long VendedorId, decimal Valor)> ComissoesPorVendedor() =>
+        Itens
+            .Select(i => (Vendedor: i.VendedorId ?? VendedorId, i.ComissaoValor))
+            .Where(x => x.Vendedor is not null && x.ComissaoValor > 0)
+            .GroupBy(x => x.Vendedor!.Value)
+            .Select(g => (
+                VendedorId: g.Key,
+                Valor: decimal.Round(g.Sum(x => x.ComissaoValor), 2, MidpointRounding.AwayFromZero)))
+            .OrderBy(x => x.VendedorId)
+            .ToList();
 }
 
 public class VendaItem : EntidadeDeTenant
@@ -83,6 +102,15 @@ public class VendaItem : EntidadeDeTenant
     /// foi vendido e prometido a quem atendeu.
     /// </summary>
     public decimal ComissaoPercentual { get; set; }
+
+    /// <summary>
+    /// Quem leva a comissão **deste** item. Nulo cai no vendedor da venda.
+    ///
+    /// Existe porque um atendimento pode ter serviços prestados por pessoas diferentes,
+    /// e a comissão tem de seguir quem prestou — não quem abriu a venda.
+    /// </summary>
+    public long? VendedorId { get; set; }
+    public Usuario? Vendedor { get; set; }
 
     public decimal TotalBruto => decimal.Round(PrecoUnitario * Quantidade, 2, MidpointRounding.AwayFromZero);
 

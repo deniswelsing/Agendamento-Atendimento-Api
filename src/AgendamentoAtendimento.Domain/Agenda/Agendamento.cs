@@ -32,6 +32,11 @@ public class Agendamento : EntidadeDeTenant
 
     public StatusAgendamento Status { get; set; } = StatusAgendamento.Agendado;
 
+    /// <summary>
+    /// Quem responde pelo atendimento como um todo — na prática, quem presta o primeiro
+    /// serviço. Cada serviço tem o seu em <see cref="AgendamentoItem.ResponsavelId"/>;
+    /// este continua existindo porque é por ele que a agenda filtra e lista.
+    /// </summary>
     public long? ResponsavelId { get; set; }
     public Usuario? Responsavel { get; set; }
 
@@ -57,6 +62,50 @@ public class Agendamento : EntidadeDeTenant
     public ICollection<AgendamentoItem> Itens { get; set; } = new List<AgendamentoItem>();
 
     public int DuracaoMinutos => (int)(Fim - Inicio).TotalMinutes;
+
+    /// <summary>
+    /// Os serviços na ordem em que acontecem, cada um já com a sua janela. Os serviços
+    /// são sequenciais: o cliente faz um, depois o outro — por isso pessoas diferentes
+    /// podem prestá-los sem conflito.
+    /// </summary>
+    public IEnumerable<(AgendamentoItem Item, DateTimeOffset Inicio, DateTimeOffset Fim)> Janelas()
+    {
+        var cursor = Inicio;
+        foreach (var item in Itens.OrderBy(i => i.Ordem).ThenBy(i => i.Id))
+        {
+            var fim = cursor.AddMinutes(item.DuracaoMinutos * item.Quantidade);
+            yield return (item, cursor, fim);
+            cursor = fim;
+        }
+    }
+
+    /// <summary>
+    /// Quem está ocupado por causa deste agendamento, e quando. É isto — e não a janela
+    /// inteira — que tira alguém da grade: quem presta só o segundo serviço continua
+    /// livre durante o primeiro.
+    /// </summary>
+    public IEnumerable<(long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim)> Ocupacoes()
+    {
+        var alguem = false;
+        foreach (var (item, inicio, fim) in Janelas())
+        {
+            var responsavel = item.ResponsavelId ?? ResponsavelId;
+            if (responsavel is null)
+            {
+                continue;
+            }
+
+            alguem = true;
+            yield return (responsavel.Value, inicio, fim);
+        }
+
+        // Agendamento sem item algum (ou sem ninguém em nenhum item) ainda ocupa quem
+        // responde por ele: o compromisso existe na agenda.
+        if (!alguem && ResponsavelId is { } dono)
+        {
+            yield return (dono, Inicio, Fim);
+        }
+    }
 }
 
 public class AgendamentoItem : EntidadeDeTenant
@@ -72,4 +121,16 @@ public class AgendamentoItem : EntidadeDeTenant
     public int DuracaoMinutos { get; set; }
     public int Quantidade { get; set; } = 1;
     public decimal PrecoUnitario { get; set; }
+
+    /// <summary>Posição na sequência. É o que define a janela de cada serviço.</summary>
+    public int Ordem { get; set; }
+
+    /// <summary>
+    /// Quem presta **este** serviço. Nulo cai no responsável do agendamento — é o que
+    /// mantém válido tudo que foi marcado antes desta regra existir.
+    ///
+    /// A comissão da venda segue esta pessoa, e não quem abriu o atendimento.
+    /// </summary>
+    public long? ResponsavelId { get; set; }
+    public Usuario? Responsavel { get; set; }
 }

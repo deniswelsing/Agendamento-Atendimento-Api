@@ -163,6 +163,10 @@ public class AgendamentoItemConfig : IEntityTypeConfiguration<AgendamentoItem>
         b.Property(i => i.Nome).HasMaxLength(200).IsRequired();
         b.HasOne(i => i.ItemCatalogo).WithMany().HasForeignKey(i => i.ItemCatalogoId)
             .OnDelete(DeleteBehavior.Restrict);
+        // Quem presta ESTE serviço. Sair do time não apaga o histórico do agendamento.
+        b.HasOne(i => i.Responsavel).WithMany().HasForeignKey(i => i.ResponsavelId)
+            .OnDelete(DeleteBehavior.SetNull);
+        b.HasIndex(i => new { i.TenantId, i.ResponsavelId });
     }
 }
 
@@ -269,6 +273,9 @@ public class VendaItemConfig : IEntityTypeConfiguration<VendaItem>
         b.Ignore(i => i.ComissaoValor);
         b.HasOne(i => i.ItemCatalogo).WithMany().HasForeignKey(i => i.ItemCatalogoId)
             .OnDelete(DeleteBehavior.Restrict);
+        // Quem leva a comissão deste item. Sair do time não apaga o histórico da venda.
+        b.HasOne(i => i.Vendedor).WithMany().HasForeignKey(i => i.VendedorId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

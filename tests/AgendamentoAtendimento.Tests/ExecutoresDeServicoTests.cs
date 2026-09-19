@@ -1,3 +1,4 @@
+using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Clientes;
@@ -104,6 +105,19 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
         await _db.SaveChangesAsync();
     }
 
+
+    /// <summary>
+    /// Quem a grade oferece para o primeiro serviço num horário. Agora um encaixe é uma
+    /// cadeia com um escolhido por serviço, e os outros que poderiam pegar vêm junto —
+    /// é isso que deixa trocar a pessoa na hora de marcar.
+    /// </summary>
+    private static IEnumerable<long> QuemPodeNoPrimeiro(DiaDaAgenda dia) =>
+        dia.Livres.SelectMany(s => s.Atribuicoes[0].Candidatos).Select(c => c.UsuarioId).Distinct();
+
+    private static IEnumerable<long> QuemPodeAs(DiaDaAgenda dia, DateTimeOffset hora) =>
+        dia.Livres.Where(s => s.Inicio == hora)
+            .SelectMany(s => s.Atribuicoes[0].Candidatos).Select(c => c.UsuarioId).Distinct();
+
     private Task<DiaDaAgenda> EncaixesAsync(params long[] itens) =>
         _servico.ObterDiaAsync(Segunda, 30, null, default, itens);
 
@@ -113,8 +127,8 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
         // É o padrão, e o que mantém agendável tudo que existia antes desta regra.
         var dia = await EncaixesAsync(CorteId);
 
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == BrunaId);
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == CaioId);
+        Assert.Contains(BrunaId, QuemPodeNoPrimeiro(dia));
+        Assert.Contains(CaioId, QuemPodeNoPrimeiro(dia));
     }
 
     [Fact]
@@ -124,8 +138,8 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
 
         var dia = await EncaixesAsync(CorteId);
 
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == BrunaId);
-        Assert.DoesNotContain(dia.Livres, s => s.ResponsavelId == CaioId);
+        Assert.Contains(BrunaId, QuemPodeNoPrimeiro(dia));
+        Assert.DoesNotContain(CaioId, QuemPodeNoPrimeiro(dia));
     }
 
     [Fact]
@@ -135,32 +149,123 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
 
         var dia = await EncaixesAsync(CorteId);
 
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == BrunaId);
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == CaioId);
+        Assert.Contains(BrunaId, QuemPodeNoPrimeiro(dia));
+        Assert.Contains(CaioId, QuemPodeNoPrimeiro(dia));
     }
 
     [Fact]
-    public async Task Dois_servicos_exigem_quem_presta_os_dois()
+    public async Task Dois_servicos_podem_ser_prestados_por_pessoas_diferentes()
     {
-        // Um encaixe é atendido por uma pessoa só: ela precisa dar conta do conjunto.
-        await MarcarExecutorAsync(CorteId, BrunaId, CaioId);
+        // Os serviços são sequenciais, então não precisa existir alguém que dê conta dos
+        // dois: basta haver quem pegue cada um na sua janela.
+        await MarcarExecutorAsync(CorteId, BrunaId);
         await MarcarExecutorAsync(BarbaId, CaioId);
 
-        var dia = await _servico.ObterDiaAsync(Segunda, 60, null, default, new[] { CorteId, BarbaId });
+        var dia = await _servico.ObterDiaAsync(Segunda, 0, null, default, new[] { CorteId, BarbaId });
 
-        Assert.Contains(dia.Livres, s => s.ResponsavelId == CaioId);
-        Assert.DoesNotContain(dia.Livres, s => s.ResponsavelId == BrunaId);
+        var encaixe = Assert.Single(dia.Livres, s => s.Inicio.Hour == 8 && s.Inicio.Minute == 0);
+        Assert.Equal(2, encaixe.Atribuicoes.Count);
+        Assert.Equal(BrunaId, encaixe.Atribuicoes[0].ResponsavelId);
+        Assert.Equal(CaioId, encaixe.Atribuicoes[1].ResponsavelId);
+
+        // E as janelas são encadeadas: um serviço começa quando o outro acaba.
+        Assert.Equal(encaixe.Atribuicoes[0].Fim, encaixe.Atribuicoes[1].Inicio);
+        Assert.Equal(encaixe.Fim, encaixe.Atribuicoes[1].Fim);
+    }
+
+    /// <summary>
+    /// Com um só candidato não há escolha a fazer: a tela marca e segue. É a regra de
+    /// "se só existe um funcionário que atende, ele é escolhido automaticamente".
+    /// </summary>
+    [Fact]
+    public async Task Um_unico_candidato_nao_deixa_escolha()
+    {
+        await MarcarExecutorAsync(CorteId, BrunaId);
+
+        var dia = await EncaixesAsync(CorteId);
+        var encaixe = dia.Livres.First();
+
+        Assert.Equal(1, encaixe.Atribuicoes[0].Alternativas);
+        Assert.Equal(BrunaId, encaixe.Atribuicoes[0].ResponsavelId);
+    }
+
+    /// <summary>
+    /// Com mais de um, a grade devolve todos: é assim que a tela deixa trocar a pessoa
+    /// sem perguntar de novo ao servidor.
+    /// </summary>
+    [Fact]
+    public async Task Com_varios_candidatos_a_grade_devolve_todos()
+    {
+        await MarcarExecutorAsync(CorteId, BrunaId, CaioId);
+
+        var dia = await EncaixesAsync(CorteId);
+        var encaixe = dia.Livres.First();
+
+        Assert.Equal(2, encaixe.Atribuicoes[0].Alternativas);
+        Assert.Equal(
+            new[] { BrunaId, CaioId }.OrderBy(x => x),
+            encaixe.Atribuicoes[0].Candidatos.Select(c => c.UsuarioId).OrderBy(x => x));
+    }
+
+    /// <summary>
+    /// Quem presta só o segundo serviço de um atendimento continua livre durante o
+    /// primeiro. Contar a janela inteira como ocupada perderia esse encaixe.
+    /// </summary>
+    [Fact]
+    public async Task Quem_presta_so_o_segundo_servico_fica_livre_no_primeiro()
+    {
+        await MarcarExecutorAsync(CorteId, BrunaId);
+        await MarcarExecutorAsync(BarbaId, CaioId);
+
+        // Bruna faz o Corte das 8h às 8h30; Caio faz a Barba das 8h30 às 9h.
+        var agendamento = new Agendamento
+        {
+            TenantId = 1, ClienteId = 1, ResponsavelId = BrunaId,
+            Inicio = new DateTimeOffset(2026, 9, 21, 8, 0, 0, TimeSpan.Zero),
+            Fim = new DateTimeOffset(2026, 9, 21, 9, 0, 0, TimeSpan.Zero),
+            Status = StatusAgendamento.Confirmado,
+        };
+        agendamento.Itens.Add(new AgendamentoItem
+        {
+            TenantId = 1, ItemCatalogoId = CorteId, Nome = "Corte",
+            DuracaoMinutos = 30, Ordem = 0, ResponsavelId = BrunaId,
+        });
+        agendamento.Itens.Add(new AgendamentoItem
+        {
+            TenantId = 1, ItemCatalogoId = BarbaId, Nome = "Barba",
+            DuracaoMinutos = 30, Ordem = 1, ResponsavelId = CaioId,
+        });
+        _db.Agendamentos.Add(agendamento);
+        await _db.SaveChangesAsync();
+
+        var oitoHoras = new DateTimeOffset(2026, 9, 21, 8, 0, 0, TimeSpan.Zero);
+        var dia = await _servico.ObterDiaAsync(Segunda, 0, null, default, new[] { BarbaId });
+
+        // Caio está comprometido só das 8h30 às 9h, então as 8h continuam dele.
+        Assert.Contains(CaioId, QuemPodeAs(dia, oitoHoras));
+        Assert.DoesNotContain(
+            CaioId,
+            QuemPodeAs(dia, new DateTimeOffset(2026, 9, 21, 8, 30, 0, TimeSpan.Zero)));
     }
 
     [Fact]
     public async Task Servico_restrito_convive_com_servico_aberto()
     {
-        // Só o serviço que declarou executores restringe; o outro segue aberto.
+        // Só o serviço que declarou executores restringe; o outro segue aberto — e cada
+        // um pode ir para uma pessoa diferente, porque acontecem em sequência.
         await MarcarExecutorAsync(BarbaId, CaioId);
 
-        var dia = await _servico.ObterDiaAsync(Segunda, 60, null, default, new[] { CorteId, BarbaId });
+        var dia = await _servico.ObterDiaAsync(Segunda, 0, null, default, new[] { CorteId, BarbaId });
 
-        Assert.All(dia.Livres, s => Assert.Equal(CaioId, s.ResponsavelId));
+        Assert.NotEmpty(dia.Livres);
+        Assert.All(dia.Livres, s =>
+        {
+            // O Corte é aberto: os dois podem pegá-lo.
+            Assert.Equal(2, s.Atribuicoes[0].Alternativas);
+            // A Barba é só do Caio, sempre.
+            Assert.Equal(CaioId, s.Atribuicoes[1].ResponsavelId);
+            Assert.Equal(1, s.Atribuicoes[1].Alternativas);
+        });
     }
 
     [Fact]
@@ -227,8 +332,8 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
         var dias = await _servico.ObterPeriodoAsync(Segunda, Segunda, 30, null, default);
         var semana = Assert.Single(dias);
 
-        Assert.Contains(semana.Livres, s => s.ResponsavelId == BrunaId);
-        Assert.Contains(semana.Livres, s => s.ResponsavelId == CaioId);
+        Assert.Contains(BrunaId, QuemPodeNoPrimeiro(semana));
+        Assert.Contains(CaioId, QuemPodeNoPrimeiro(semana));
     }
 
     [Fact]
@@ -253,5 +358,85 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
             BrunaId, null, default, new[] { CorteId });
 
         Assert.False(livre);
+    }
+}
+
+/// <summary>
+/// A comissão segue quem prestou o serviço, não quem abriu a venda. Com dois
+/// funcionários no mesmo atendimento, somar tudo num nome só pagaria a pessoa errada.
+/// </summary>
+public class ComissaoPorQuemPrestouTests
+{
+    private static VendaItem Item(string nome, decimal preco, decimal comissao, long? vendedor) =>
+        new()
+        {
+            TenantId = 1, ItemCatalogoId = 1, Nome = nome, Tipo = TipoItem.Servico,
+            Quantidade = 1, PrecoUnitario = preco, ComissaoPercentual = comissao,
+            VendedorId = vendedor,
+        };
+
+    [Fact]
+    public void Cada_item_paga_quem_prestou()
+    {
+        var venda = new Venda { TenantId = 1, ClienteId = 1, VendedorId = 2 };
+        venda.Itens.Add(Item("Consultoria", 320m, 10m, vendedor: 2));
+        venda.Itens.Add(Item("Revisão", 410m, 8m, vendedor: 3));
+
+        var porPessoa = venda.ComissoesPorVendedor();
+
+        Assert.Equal(2, porPessoa.Count);
+        Assert.Equal(32.00m, porPessoa.Single(c => c.VendedorId == 2).Valor);
+        Assert.Equal(32.80m, porPessoa.Single(c => c.VendedorId == 3).Valor);
+        Assert.Equal(64.80m, venda.TotalComissao);
+    }
+
+    [Fact]
+    public void Item_sem_vendedor_cai_no_vendedor_da_venda()
+    {
+        var venda = new Venda { TenantId = 1, ClienteId = 1, VendedorId = 5 };
+        venda.Itens.Add(Item("Consultoria", 100m, 10m, vendedor: null));
+
+        var porPessoa = venda.ComissoesPorVendedor();
+
+        Assert.Equal(5, Assert.Single(porPessoa).VendedorId);
+        Assert.Equal(10.00m, venda.TotalComissao);
+    }
+
+    /// <summary>Sem ninguém em lugar nenhum, a empresa não deve comissão.</summary>
+    [Fact]
+    public void Venda_sem_vendedor_nenhum_nao_gera_comissao()
+    {
+        var venda = new Venda { TenantId = 1, ClienteId = 1, VendedorId = null };
+        venda.Itens.Add(Item("Consultoria", 100m, 10m, vendedor: null));
+
+        Assert.Empty(venda.ComissoesPorVendedor());
+        Assert.Equal(0m, venda.TotalComissao);
+    }
+
+    /// <summary>
+    /// Metade com dono, metade sem: a empresa paga só o que tem a quem pagar. Contar a
+    /// venda inteira pela presença de um vendedor daria comissão por item órfão.
+    /// </summary>
+    [Fact]
+    public void So_o_que_tem_dono_entra_na_conta()
+    {
+        var venda = new Venda { TenantId = 1, ClienteId = 1, VendedorId = null };
+        venda.Itens.Add(Item("Com dono", 200m, 10m, vendedor: 3));
+        venda.Itens.Add(Item("Órfão", 200m, 10m, vendedor: null));
+
+        Assert.Equal(20.00m, venda.TotalComissao);
+        Assert.Equal(3, Assert.Single(venda.ComissoesPorVendedor()).VendedorId);
+    }
+
+    /// <summary>Desconto no item reduz a comissão: ela é sobre o líquido.</summary>
+    [Fact]
+    public void Desconto_reduz_a_comissao_de_quem_prestou()
+    {
+        var venda = new Venda { TenantId = 1, ClienteId = 1, VendedorId = null };
+        var item = Item("Consultoria", 200m, 10m, vendedor: 4);
+        item.DescontoValor = 50m;
+        venda.Itens.Add(item);
+
+        Assert.Equal(15.00m, venda.TotalComissao);
     }
 }

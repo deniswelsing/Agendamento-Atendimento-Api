@@ -55,7 +55,15 @@ public sealed record ItemCatalogoRequest(
     decimal ComissaoPercentual = 0, decimal TaxaPercentual = 0, bool VisivelOnline = true);
 
 // ------------------------------------------------------------------ agendamentos
-public sealed record ItemAgendadoDto(long ItemId, string Nome, int DuracaoMinutos, int Quantidade, decimal PrecoUnitario);
+public sealed record ItemAgendadoDto(
+    long ItemId, string Nome, int DuracaoMinutos, int Quantidade, decimal PrecoUnitario,
+    /// <summary>Id da linha — é por ele que se troca quem presta este serviço.</summary>
+    long AgendamentoItemId,
+    int Ordem,
+    /// <summary>Quem presta ESTE serviço. A comissão da venda segue esta pessoa.</summary>
+    long? ResponsavelId, string? ResponsavelNome,
+    /// <summary>A janela deste serviço dentro do atendimento.</summary>
+    DateTimeOffset Inicio, DateTimeOffset Fim);
 
 public sealed record AgendamentoDto(
     long AgendamentoId, long ClienteId, string ClienteNome, TipoCliente TipoCliente,
@@ -116,23 +124,59 @@ public sealed record AgendamentoPublicoDto(
 
 public sealed record NovoAgendamentoRequest(
     long ClienteId, DateTimeOffset Inicio, IReadOnlyList<long> ItensIds,
-    long? ResponsavelId, string? Observacoes, string? LocalAtendimento);
+    long? ResponsavelId, string? Observacoes, string? LocalAtendimento,
+    /// <summary>
+    /// Quem presta cada serviço, na mesma ordem de <c>ItensIds</c>. Pode vir vazio — aí
+    /// o servidor escolhe quem está livre e sabe fazer. Posição nula segue a mesma regra.
+    /// </summary>
+    IReadOnlyList<long?>? ResponsaveisPorItem = null);
+
+/// <summary>Troca quem presta um serviço já marcado.</summary>
+public sealed record TrocarResponsavelRequest(long? ResponsavelId);
 
 public sealed record AlterarStatusRequest(StatusAgendamento Status, string? Motivo);
 
-public sealed record SlotDto(DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome);
+public sealed record PessoaResumoDto(long UsuarioId, string Nome);
+
+public sealed record AtribuicaoDto(
+    long ItemId, string Nome, DateTimeOffset Inicio, DateTimeOffset Fim,
+    long ResponsavelId, string ResponsavelNome,
+    /// <summary>
+    /// Quem mais poderia prestar este serviço neste horário. Um só quer dizer que não
+    /// há escolha a fazer — a tela marca e segue.
+    /// </summary>
+    IReadOnlyList<PessoaResumoDto> Candidatos);
+
+public sealed record SlotDto(
+    DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome,
+    /// <summary>Um por serviço, na ordem em que acontecem.</summary>
+    IReadOnlyList<AtribuicaoDto> Atribuicoes);
+
+/// <summary>O próximo dia com encaixe, quando o pedido não cabe no dia perguntado.</summary>
+public sealed record ProximaOportunidadeDto(DateOnly Data, SlotDto Slot);
 
 public sealed record DiaDaAgendaDto(
     DateOnly Data, bool Aberto, TimeOnly? Abertura, TimeOnly? Fechamento,
     TimeOnly? PausaInicio, TimeOnly? PausaFim, string? MotivoFechado,
-    int IntervaloSlotMinutos, int TotalAgendamentos, IReadOnlyList<SlotDto> Livres);
+    int IntervaloSlotMinutos, int TotalAgendamentos, IReadOnlyList<SlotDto> Livres,
+    /// <summary>Por que o dia não tem encaixe, quando a empresa está aberta.</summary>
+    string? MotivoSemEncaixe = null,
+    /// <summary>O primeiro dia à frente que tem encaixe, quando este não tem.</summary>
+    ProximaOportunidadeDto? Proxima = null);
 
 // ------------------------------------------------------------------------ vendas
+public sealed record ComissaoPorVendedorDto(long VendedorId, string VendedorNome, decimal Valor);
+
 public sealed record VendaItemDto(
     long VendaItemId, long ItemId, TipoItem Tipo, string Nome, decimal Quantidade,
     decimal PrecoUnitario, decimal DescontoValor, decimal TotalLiquido,
     /// <summary>Congelado na venda: mudar o catálogo depois não mexe no que já foi vendido.</summary>
-    decimal ComissaoPercentual, decimal ComissaoValor);
+    decimal ComissaoPercentual, decimal ComissaoValor,
+    /// <summary>
+    /// Quem leva a comissão DESTE item. Nulo cai no vendedor da venda — é assim que um
+    /// atendimento com dois funcionários paga cada um pelo que prestou.
+    /// </summary>
+    long? VendedorId, string? VendedorNome);
 
 public sealed record PagamentoDto(
     long PagamentoId, long FormaPagamentoId, string FormaPagamentoNome, StatusPagamento Status,
@@ -151,10 +195,15 @@ public sealed record VendaDto(
     DateTimeOffset CriadaEm, long? AgendamentoId, decimal TotalBruto, decimal TotalDescontos,
     decimal DescontoGeral, decimal TotalLiquido, decimal TotalPago, decimal SaldoAberto,
     string? Observacao, IReadOnlyList<VendaItemDto> Itens, IReadOnlyList<PagamentoDto> Pagamentos,
-    /// <summary>Quem leva a comissão desta venda.</summary>
-    long? VendedorId, string? VendedorNome, decimal TotalComissao);
+    /// <summary>Quem leva a comissão desta venda, quando não há um por item.</summary>
+    long? VendedorId, string? VendedorNome, decimal TotalComissao,
+    /// <summary>Quanto cada pessoa leva. Somar num nome só pagaria a pessoa errada.</summary>
+    IReadOnlyList<ComissaoPorVendedorDto> ComissoesPorVendedor);
 
-public sealed record VendaItemRequest(long ItemId, decimal Quantidade, decimal? PrecoUnitario, decimal DescontoValor = 0);
+public sealed record VendaItemRequest(
+    long ItemId, decimal Quantidade, decimal? PrecoUnitario, decimal DescontoValor = 0,
+    /// <summary>Quem leva a comissão deste item. Nulo herda o vendedor da venda.</summary>
+    long? VendedorId = null);
 
 public sealed record VendaRequest(
     long ClienteId, IReadOnlyList<VendaItemRequest> Itens, long? AgendamentoId,

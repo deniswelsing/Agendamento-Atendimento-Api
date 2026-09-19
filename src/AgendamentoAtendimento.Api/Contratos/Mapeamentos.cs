@@ -78,18 +78,28 @@ public static class Mapeamentos
         a.Id, a.ClienteId, a.Cliente?.NomeExibicao ?? string.Empty,
         a.Cliente?.Tipo ?? TipoCliente.Pessoa, a.Inicio, a.Fim, a.Status,
         a.ResponsavelId, a.Responsavel?.Nome,
-        a.Itens.Select(i => new ItemAgendadoDto(
-            i.ItemCatalogoId, i.Nome, i.DuracaoMinutos, i.Quantidade, i.PrecoUnitario)).ToList(),
+        a.Janelas().Select(j => new ItemAgendadoDto(
+            j.Item.ItemCatalogoId, j.Item.Nome, j.Item.DuracaoMinutos, j.Item.Quantidade,
+            j.Item.PrecoUnitario, j.Item.Id, j.Item.Ordem,
+            j.Item.ResponsavelId ?? a.ResponsavelId,
+            j.Item.Responsavel?.Nome ?? (j.Item.ResponsavelId is null ? a.Responsavel?.Nome : null),
+            j.Inicio, j.Fim)).ToList(),
         a.Observacoes, a.LocalAtendimento, a.VendaId,
         a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem);
 
     public static SlotDto ParaDto(this SlotDisponivel s) =>
-        new(s.Inicio, s.Fim, s.ResponsavelId, s.ResponsavelNome);
+        new(s.Inicio, s.Fim, s.ResponsavelId, s.ResponsavelNome,
+            s.Atribuicoes.Select(a => new AtribuicaoDto(
+                a.ItemCatalogoId, a.Nome, a.Inicio, a.Fim,
+                a.ResponsavelId, a.ResponsavelNome,
+                a.Candidatos.Select(c => new PessoaResumoDto(c.UsuarioId, c.Nome)).ToList()))
+                .ToList());
 
     public static DiaDaAgendaDto ParaDto(this DiaDaAgenda d) => new(
         d.Data, d.Aberto, d.Abertura, d.Fechamento, d.PausaInicio, d.PausaFim,
         d.MotivoFechado, d.IntervaloSlotMinutos, d.TotalAgendamentos,
-        d.Livres.Select(s => s.ParaDto()).ToList());
+        d.Livres.Select(s => s.ParaDto()).ToList(),
+        d.MotivoSemEncaixe);
 
     public static VendaDto ParaDto(this Venda v) => new(
         v.Id, v.ClienteId, v.Cliente?.NomeExibicao ?? string.Empty, v.Status, v.CriadoEm,
@@ -97,9 +107,20 @@ public static class Mapeamentos
         v.TotalPago, v.SaldoAberto, v.Observacao,
         v.Itens.Select(i => new VendaItemDto(
             i.Id, i.ItemCatalogoId, i.Tipo, i.Nome, i.Quantidade, i.PrecoUnitario,
-            i.DescontoValor, i.TotalLiquido, i.ComissaoPercentual, i.ComissaoValor)).ToList(),
+            i.DescontoValor, i.TotalLiquido, i.ComissaoPercentual, i.ComissaoValor,
+            i.VendedorId ?? v.VendedorId,
+            i.Vendedor?.Nome ?? (i.VendedorId is null ? v.Vendedor?.Nome : null))).ToList(),
         v.Pagamentos.Select(p => p.ParaDto()).ToList(),
-        v.VendedorId, v.Vendedor?.Nome, v.TotalComissao);
+        v.VendedorId, v.Vendedor?.Nome, v.TotalComissao,
+        v.ComissoesPorVendedor()
+            .Select(c => new ComissaoPorVendedorDto(
+                c.VendedorId,
+                v.Itens.FirstOrDefault(i => (i.VendedorId ?? v.VendedorId) == c.VendedorId)
+                    ?.Vendedor?.Nome
+                    ?? (c.VendedorId == v.VendedorId ? v.Vendedor?.Nome : null)
+                    ?? string.Empty,
+                c.Valor))
+            .ToList());
 
     public static PagamentoDto ParaDto(this Pagamento p) => new(
         p.Id, p.FormaPagamentoId, p.FormaPagamento?.Nome ?? string.Empty, p.Status,
