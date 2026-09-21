@@ -77,7 +77,12 @@ public static class Mapeamentos
         i.CapacidadeTurma = r.Tipo == TipoItem.Servico ? Math.Max(1, r.CapacidadeTurma) : 1;
     }
 
-    public static AgendamentoDto ParaDto(this Agendamento a) => new(
+    /// <summary>
+    /// `statusDaVenda` é o da venda ligada ao atendimento, quando o chamador a carregou.
+    /// Sem ele a ação de cobrança sai conservadora: quem não sabe se a venda foi paga
+    /// não pode oferecer receber de novo.
+    /// </summary>
+    public static AgendamentoDto ParaDto(this Agendamento a, StatusVenda? statusDaVenda = null) => new(
         a.Id, a.ClienteId, a.Cliente?.NomeExibicao ?? string.Empty,
         a.Cliente?.Tipo ?? TipoCliente.Pessoa, a.Inicio, a.Fim, a.Status,
         a.ResponsavelId, a.Responsavel?.Nome,
@@ -88,7 +93,9 @@ public static class Mapeamentos
             j.Item.Responsavel?.Nome ?? (j.Item.ResponsavelId is null ? a.Responsavel?.Nome : null),
             j.Inicio, j.Fim)).ToList(),
         a.Observacoes, a.LocalAtendimento, a.VendaId,
-        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem, a.ConfirmadoEm);
+        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem, a.ConfirmadoEm,
+        a.CobrancaDisponivel(statusDaVenda),
+        Agendamento.RotuloDaCobranca(a.CobrancaDisponivel(statusDaVenda)));
 
     public static SlotDto ParaDto(this SlotDisponivel s) =>
         new(s.Inicio, s.Fim, s.ResponsavelId, s.ResponsavelNome,

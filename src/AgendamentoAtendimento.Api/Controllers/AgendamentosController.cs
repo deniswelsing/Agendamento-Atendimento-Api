@@ -1,3 +1,4 @@
+using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
@@ -68,8 +69,46 @@ public class AgendamentosController : ControllerBaseApi
             .OrderBy(a => a.Inicio)
             .ToListAsync(ct);
 
-        return Ok(agendamentos.Select(a => a.ParaDto()).ToList());
+        // O status de cada venda ligada, numa consulta só: é o que decide se o cartão
+        // oferece receber, conferir ou nada. Sem ele a lista sairia conservadora e o
+        // caminho mais comum do dia pediria um toque a mais.
+        var statusDasVendas = await StatusDasVendasAsync(agendamentos, ct);
+
+        return Ok(agendamentos
+            .Select(a => a.ParaDto(StatusDaVendaDe(a, statusDasVendas)))
+            .ToList());
     }
+
+    /// <summary>
+    /// O status da venda de cada atendimento da lista, em uma consulta. Um por
+    /// atendimento seria uma ida ao banco por cartão da agenda.
+    /// </summary>
+    private async Task<Dictionary<long, StatusVenda>> StatusDasVendasAsync(
+        IReadOnlyCollection<Agendamento> agendamentos, CancellationToken ct)
+    {
+        var ids = agendamentos.Select(a => a.VendaId).OfType<long>().Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            return new Dictionary<long, StatusVenda>();
+        }
+
+        return await _db.Vendas.AsNoTracking()
+            .Where(v => ids.Contains(v.Id))
+            .ToDictionaryAsync(v => v.Id, v => v.Status, ct);
+    }
+
+    private static StatusVenda? StatusDaVendaDe(
+        Agendamento a, IReadOnlyDictionary<long, StatusVenda> statusDasVendas) =>
+        a.VendaId is { } vendaId && statusDasVendas.TryGetValue(vendaId, out var status)
+            ? status
+            : null;
+
+    /// <summary>O status da venda deste atendimento, quando ele já tem uma.</summary>
+    private async Task<StatusVenda?> StatusDaVendaAsync(Agendamento a, CancellationToken ct) =>
+        a.VendaId is { } vendaId
+            ? await _db.Vendas.AsNoTracking().Where(v => v.Id == vendaId)
+                .Select(v => (StatusVenda?)v.Status).FirstOrDefaultAsync(ct)
+            : null;
 
     /// <summary>
     /// Quem não tem `agenda.ver-todos` enxerga só o que ele mesmo atende. É o servidor
@@ -87,7 +126,7 @@ public class AgendamentosController : ControllerBaseApi
     public async Task<ActionResult<AgendamentoDto>> Obter(long id, CancellationToken ct)
     {
         var agendamento = NaoNulo(await CarregarAsync(id, ct), "Agendamento não encontrado.");
-        return Ok(agendamento.ParaDto());
+        return Ok(agendamento.ParaDto(await StatusDaVendaAsync(agendamento, ct)));
     }
 
     /// <summary>Encaixes livres de um dia, já considerando empresa, jornada e ocupação.</summary>
@@ -227,7 +266,9 @@ public class AgendamentosController : ControllerBaseApi
         await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
 
         var completo = await CarregarAsync(agendamento.Id, ct);
-        return CreatedAtAction(nameof(Obter), new { id = agendamento.Id }, completo!.ParaDto());
+        return CreatedAtAction(
+            nameof(Obter), new { id = agendamento.Id },
+            completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
     }
 
     [HttpPut("{id:long}")]
@@ -302,7 +343,7 @@ public class AgendamentosController : ControllerBaseApi
         await _lembretes.ReprogramarAsync(id, DateTimeOffset.UtcNow, ct);
 
         var completo = await CarregarAsync(id, ct);
-        return Ok(completo!.ParaDto());
+        return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
     }
 
     /// <summary>
@@ -348,7 +389,7 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         var completo = await CarregarAsync(id, ct);
-        return Ok(completo!.ParaDto());
+        return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
     }
 
     [HttpDelete("{id:long}")]
@@ -501,7 +542,7 @@ public class AgendamentosController : ControllerBaseApi
         await _db.SaveChangesAsync(ct);
 
         var completo = await CarregarAsync(id, ct);
-        return Ok(completo!.ParaDto());
+        return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
     }
 
     private static IReadOnlyList<AtribuicaoDeServico> AplicarEscolhas(

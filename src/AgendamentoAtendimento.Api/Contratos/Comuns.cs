@@ -79,7 +79,15 @@ public sealed record AgendamentoDto(
     /// Quando o cliente confirmou presença. Nulo é "ainda não respondeu" — diferente de
     /// "não vem", e diferente do status, que o time também muda.
     /// </summary>
-    DateTimeOffset? ConfirmadoPeloCliente = null);
+    DateTimeOffset? ConfirmadoPeloCliente = null,
+    /// <summary>
+    /// O próximo passo de cobrança, decidido aqui: depende do status do atendimento, de
+    /// já ter virado venda e de em que pé essa venda está — três coisas que só o
+    /// servidor tem juntas.
+    /// </summary>
+    AcaoDeCobranca AcaoDeCobranca = AcaoDeCobranca.Nenhuma,
+    /// <summary>O texto do botão, para as telas dizerem todas a mesma coisa.</summary>
+    string AcaoDeCobrancaRotulo = "");
 
 // ------------------------------------------------------- página pública (admin)
 public sealed record PaginaPublicaDto(

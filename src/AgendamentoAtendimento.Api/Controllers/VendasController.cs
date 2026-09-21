@@ -252,6 +252,20 @@ public class VendasController : ControllerBaseApi
 
         venda.Status = StatusVenda.Cancelada;
         venda.CanceladaEm = DateTimeOffset.UtcNow;
+
+        // O atendimento volta para a fila de cobrança. Sem soltar o vínculo, um
+        // cancelamento deixaria o serviço entregue sem poder ser cobrado nunca mais:
+        // criar outra venda para ele esbarra em ATENDIMENTO_JA_FATURADO.
+        if (venda.AgendamentoId is { } agendamentoId)
+        {
+            var agendamento = await _db.Agendamentos
+                .FirstOrDefaultAsync(a => a.Id == agendamentoId && a.VendaId == venda.Id, ct);
+            if (agendamento is not null)
+            {
+                agendamento.VendaId = null;
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }

@@ -1,3 +1,4 @@
+using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.Common;
@@ -168,6 +169,80 @@ public class Agendamento : EntidadeDeTenant
             yield return (dono, Inicio, Fim, null);
         }
     }
+
+    /// <summary>
+    /// O próximo passo de cobrança deste atendimento, dado o status da venda ligada a
+    /// ele (nulo quando não há venda). É a regra que decide se o cartão da agenda mostra
+    /// "Receber pagamento", "Ver venda" ou nada.
+    ///
+    /// Venda cancelada devolve o atendimento à fila: o trabalho foi entregue e continua
+    /// a receber. Tratá-la como venda existente deixaria o atendimento sem cobrança para
+    /// sempre por causa de um cancelamento.
+    /// </summary>
+    public AcaoDeCobranca CobrancaDisponivel(StatusVenda? statusDaVenda)
+    {
+        // Sem serviço não há o que cobrar, em qualquer status.
+        if (Itens.Count == 0)
+        {
+            return AcaoDeCobranca.Nenhuma;
+        }
+
+        if (VendaId is not null)
+        {
+            // Sem saber o status, só dá para olhar. Oferecer gerar aqui prometeria uma
+            // venda que a Api recusa com ATENDIMENTO_JA_FATURADO — e quem toca só
+            // descobre no erro.
+            if (statusDaVenda is not { } status)
+            {
+                return AcaoDeCobranca.VerVenda;
+            }
+
+            if (status != StatusVenda.Cancelada)
+            {
+                return status == StatusVenda.Paga
+                    ? AcaoDeCobranca.VerVenda
+                    : AcaoDeCobranca.ReceberPagamento;
+            }
+        }
+
+        // Faturar conclui o que ainda está em andamento — é o que o app faz — então o
+        // atendimento em curso também já pode virar venda.
+        return Status is StatusAgendamento.Concluido or StatusAgendamento.EmAtendimento
+            ? AcaoDeCobranca.GerarVenda
+            : AcaoDeCobranca.Nenhuma;
+    }
+
+    /// <summary>O texto do botão. Vem daqui para as três telas dizerem a mesma coisa.</summary>
+    public static string RotuloDaCobranca(AcaoDeCobranca acao) => acao switch
+    {
+        AcaoDeCobranca.GerarVenda => "Receber pagamento",
+        AcaoDeCobranca.ReceberPagamento => "Receber pagamento",
+        AcaoDeCobranca.VerVenda => "Ver venda",
+        _ => string.Empty,
+    };
+}
+
+/// <summary>
+/// O que a tela oferece como próximo passo de cobrança de um atendimento. Quem decide é
+/// o servidor porque a resposta depende de três coisas que só ele tem juntas: o status
+/// do atendimento, se ele já virou venda e em que pé essa venda está.
+///
+/// Existe como enum, e não como bool, porque "não dá para cobrar" e "já foi pago" levam
+/// a botões diferentes — e um bool obrigaria a tela a adivinhar qual.
+/// </summary>
+public enum AcaoDeCobranca
+{
+    /// <summary>Nada a fazer: o atendimento não chegou lá, ou não tem o que cobrar.</summary>
+    Nenhuma = 1,
+
+    /// <summary>Ainda não virou venda. O toque cria a venda e abre o fechamento.</summary>
+    GerarVenda = 2,
+
+    /// <summary>Já tem venda com saldo. O toque leva ao fechamento dela.</summary>
+    ReceberPagamento = 3,
+
+    /// <summary>Venda quitada. Só há o que conferir.</summary>
+    VerVenda = 4,
 }
 
 public class AgendamentoItem : EntidadeDeTenant
