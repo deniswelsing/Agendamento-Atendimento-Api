@@ -243,7 +243,15 @@ Recusas: `AntecedenciaInsuficiente`, `ForaDaJanela`, `ServicoIndisponivel`,
 ```
 GET /api/catalogo/itens/{id}/executores  -> { itemId, nome, executores[], abertoATodos }
 PUT /api/catalogo/itens/{id}/executores  { usuariosIds: [2, 3] }
+GET /api/catalogo/executores?itensIds=1&itensIds=2  -> [ { itemId, nome, executores[], abertoATodos } ]
 ```
+
+O `GET` em lote responde por vários serviços de uma vez, e sem `itensIds` por todos os
+ativos. É o que a tela de novo agendamento usa para oferecer, ao lado de cada serviço
+marcado, só quem sabe prestá-lo — e para marcar de uma vez tudo o que uma pessoa presta.
+Perguntar item a item seria uma requisição por linha do catálogo. Id que não existe
+simplesmente não volta: a resposta vira opção de tela, e um erro por causa de um item
+apagado enquanto ela estava aberta não ajudaria ninguém.
 
 Um serviço **sem executores cadastrados é aberto a qualquer atendente** — é o padrão, e é
 o que mantém agendável tudo que existia antes desta regra. Assim que alguém é marcado, a
@@ -253,9 +261,15 @@ lista vazia reabre para o time inteiro.
 Só quem tem `atendente` recebe serviço; aceitar outro seria prometer um encaixe que a
 agenda nunca vai oferecer.
 
-A disponibilidade filtra por `itensIds`: com dois serviços no mesmo encaixe, só aparece
-quem presta **os dois** — um encaixe é atendido por uma pessoa só. Quando parte dos
-serviços é aberta e parte restrita, só a parte restrita limita.
+A disponibilidade filtra por `itensIds`, serviço a serviço: cada atribuição do encaixe
+traz os candidatos **daquele** serviço. Os serviços são sequenciais, então **pessoas
+diferentes podem pegar serviços diferentes do mesmo atendimento** — a coloração com quem
+faz coloração, a massagem em seguida com quem faz massagem. Quem já está no atendimento
+continua nele quando pode; trocar só acontece quando não dá para continuar.
+
+Um serviço sem ninguém livre derruba o encaixe inteiro: um atendimento pela metade não é
+um horário que se possa oferecer. E `responsavelId` na consulta é o pedido de que **uma
+pessoa só** faça tudo — é assim que a tela procura encaixe para quem quer um nome fixo.
 
 `/periodo` aplica o mesmo filtro que `/disponibilidade`, desde que receba os mesmos
 `itensIds`: sem eles a semana contaria encaixes com quem não presta o serviço, e o dia
