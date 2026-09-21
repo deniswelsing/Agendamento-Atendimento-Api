@@ -53,6 +53,160 @@ public class HorariosController : ControllerBaseApi
         return Ok(ModoDeOcupacaoDto.De(tenant.ModoDeOcupacao));
     }
 
+    /// <summary>
+    /// A jornada precisa caber no funcionamento da empresa. A agenda já usa a interseção
+    /// das duas janelas, então gravar fora dela guardaria hora que nunca vira encaixe — e
+    /// a tela mostraria uma escala que a agenda não cumpre.
+    /// </summary>
+    private static void ValidarCabeNoFuncionamento(
+        DayOfWeek diaDaSemana, TimeOnly inicio, TimeOnly fim,
+        IReadOnlyList<HorarioFuncionamento> funcionamento)
+    {
+        if (inicio >= fim)
+        {
+            throw new RegraDeNegocioException(
+                "O início da jornada precisa vir antes do fim.", "JANELA_INVALIDA");
+        }
+
+        var empresa = funcionamento.FirstOrDefault(h => h.DiaDaSemana == diaDaSemana);
+        var nomeDoDia = NomeDoDia(diaDaSemana);
+
+        if (empresa is null || !empresa.Aberto || empresa.Abertura is null || empresa.Fechamento is null)
+        {
+            throw new RegraDeNegocioException(
+                $"A empresa não abre {nomeDoDia}. Abra o dia em Horários da empresa "
+                + "antes de escalar alguém.",
+                "EMPRESA_FECHADA");
+        }
+
+        if (inicio < empresa.Abertura || fim > empresa.Fechamento)
+        {
+            // Fora da interpolação: dentro dela o ":" abriria o formato.
+            var abre = empresa.Abertura.Value.ToString("HH:mm");
+            var fecha = empresa.Fechamento.Value.ToString("HH:mm");
+            // Começa a frase, então vai com maiúscula.
+            var noDia = char.ToUpperInvariant(nomeDoDia[0]) + nomeDoDia[1..];
+            throw new RegraDeNegocioException(
+                $"{noDia} a empresa funciona das {abre} às {fecha}. "
+                + "A jornada precisa caber nesse intervalo.",
+                "FORA_DO_FUNCIONAMENTO");
+        }
+    }
+
+    /// <summary>
+    /// Atrela uma pessoa a um turno de uma vez. Sem isto, escalar alguém em cinco dias é
+    /// repetir a mesma escolha cinco vezes — que é justamente o trabalho que o turno
+    /// existe para evitar.
+    ///
+    /// Dia em que o turno não cabe é PULADO, não recusado: pedir a semana inteira numa
+    /// empresa que fecha mais cedo no sábado é um pedido razoável, e recusar tudo por
+    /// causa de um dia obrigaria a montar a lista à mão.
+    /// </summary>
+    [HttpPut("staff/{usuarioId:long}/turno")]
+    [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.JornadaPorPessoa)]
+    public async Task<ActionResult<IReadOnlyList<HorarioStaffDto>>> AtrelarAoTurno(
+        long usuarioId, AtrelarAoTurnoRequest req, CancellationToken ct)
+    {
+        var usuario = NaoNulo(
+            await _db.Usuarios.FirstOrDefaultAsync(u => u.Id == usuarioId, ct),
+            "Usuário não encontrado.");
+
+        var turno = NaoNulo(
+            await _db.Turnos.FirstOrDefaultAsync(t => t.Id == req.TurnoId && t.Ativo, ct),
+            "Turno não encontrado ou inativo.");
+
+        var funcionamento = await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
+
+        // Sem dias no pedido, vale a semana que a empresa abre: é o que "atrelar ao
+        // turno" quer dizer quando ninguém detalha.
+        var dias = req.Dias is { Count: > 0 }
+            ? req.Dias.Distinct().ToList()
+            : funcionamento.Where(h => h.Aberto).Select(h => h.DiaDaSemana).ToList();
+
+        var aplicados = dias
+            .Where(d => funcionamento.Any(h =>
+                h.DiaDaSemana == d && h.Aberto
+                && h.Abertura is { } abre && h.Fechamento is { } fecha
+                && turno.Inicio >= abre && turno.Fim <= fecha))
+            .ToList();
+
+        if (aplicados.Count == 0)
+        {
+            throw new RegraDeNegocioException(
+                $"O turno {turno.Nome} ({turno.Janela}) não cabe no funcionamento da "
+                + "empresa em nenhum dos dias pedidos.",
+                "TURNO_NAO_CABE");
+        }
+
+        var atuais = await _db.HorariosStaff.Where(h => h.UsuarioId == usuario.Id).ToListAsync(ct);
+        foreach (var dia in aplicados)
+        {
+            var horario = atuais.FirstOrDefault(h => h.DiaDaSemana == dia);
+            if (horario is null)
+            {
+                horario = new HorarioStaff { UsuarioId = usuario.Id, DiaDaSemana = dia };
+                _db.HorariosStaff.Add(horario);
+            }
+
+            horario.TurnoId = turno.Id;
+            horario.Trabalha = true;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return await Staff(usuario.Id, ct);
+    }
+
+    /// <summary>
+    /// Dá à pessoa um horário próprio naquele dia, soltando-a de qualquer turno. Soltar
+    /// sem pôr um horário no lugar deixaria a linha valendo pela janela antiga guardada
+    /// nela, que ninguém escolheu.
+    /// </summary>
+    [HttpPut("staff/{usuarioId:long}/horario-proprio")]
+    [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.JornadaPorPessoa)]
+    public async Task<ActionResult<IReadOnlyList<HorarioStaffDto>>> DefinirHorarioProprio(
+        long usuarioId, HorarioProprioRequest req, CancellationToken ct)
+    {
+        var usuario = NaoNulo(
+            await _db.Usuarios.FirstOrDefaultAsync(u => u.Id == usuarioId, ct),
+            "Usuário não encontrado.");
+
+        var funcionamento = await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
+
+        if (req.Trabalha)
+        {
+            ValidarCabeNoFuncionamento(req.DiaDaSemana, req.Inicio, req.Fim, funcionamento);
+
+            if (req.PausaInicio is { } pi && req.PausaFim is { } pf
+                && (pi >= pf || pi < req.Inicio || pf > req.Fim))
+            {
+                throw new RegraDeNegocioException(
+                    "A pausa precisa ficar dentro da jornada.", "PAUSA_INVALIDA");
+            }
+        }
+
+        var horario = await _db.HorariosStaff
+            .FirstOrDefaultAsync(h => h.UsuarioId == usuario.Id && h.DiaDaSemana == req.DiaDaSemana, ct);
+
+        if (horario is null)
+        {
+            horario = new HorarioStaff { UsuarioId = usuario.Id, DiaDaSemana = req.DiaDaSemana };
+            _db.HorariosStaff.Add(horario);
+        }
+
+        // Horário próprio é o oposto de seguir turno: soltar o vínculo é o ponto.
+        horario.TurnoId = null;
+        horario.Inicio = req.Inicio;
+        horario.Fim = req.Fim;
+        horario.PausaInicio = req.PausaInicio;
+        horario.PausaFim = req.PausaFim;
+        horario.Trabalha = req.Trabalha;
+
+        await _db.SaveChangesAsync(ct);
+        return await Staff(usuario.Id, ct);
+    }
+
     private static string NomeDoDia(DayOfWeek dia) => dia switch
     {
         DayOfWeek.Sunday => "aos domingos",
@@ -362,40 +516,8 @@ public class HorariosController : ControllerBaseApi
 
             // Com turno, os horários vêm dele; sem turno, da janela livre que veio no
             // pedido. É a mesma conta que a agenda faz depois.
-            var inicio = turno?.Inicio ?? dia.Inicio;
-            var fim = turno?.Fim ?? dia.Fim;
-
-            if (inicio >= fim)
-            {
-                throw new RegraDeNegocioException(
-                    "O início da jornada precisa vir antes do fim.", "JANELA_INVALIDA");
-            }
-
-            var empresa = funcionamento.FirstOrDefault(h => h.DiaDaSemana == dia.DiaDaSemana);
-            var nomeDoDia = NomeDoDia(dia.DiaDaSemana);
-
-            if (empresa is null || !empresa.Aberto || empresa.Abertura is null || empresa.Fechamento is null)
-            {
-                throw new RegraDeNegocioException(
-                    $"A empresa não abre {nomeDoDia}. Abra o dia em Horários da empresa "
-                    + "antes de escalar alguém.",
-                    "EMPRESA_FECHADA");
-            }
-
-            if (inicio < empresa.Abertura || fim > empresa.Fechamento)
-            {
-                // Fora da interpolação: dentro dela o ":" abriria o formato, e o
-                // escape necessário só deixaria a mensagem mais difícil de ler.
-                var abre = empresa.Abertura.Value.ToString("HH:mm");
-                var fecha = empresa.Fechamento.Value.ToString("HH:mm");
-                // Começa a frase, então vai com maiúscula — "aos sábados a empresa..."
-                // no início de uma mensagem parece texto cortado pela metade.
-                var noDia = char.ToUpperInvariant(nomeDoDia[0]) + nomeDoDia[1..];
-                throw new RegraDeNegocioException(
-                    $"{noDia} a empresa funciona das {abre} às {fecha}. "
-                    + "A jornada precisa caber nesse intervalo.",
-                    "FORA_DO_FUNCIONAMENTO");
-            }
+            ValidarCabeNoFuncionamento(
+                dia.DiaDaSemana, turno?.Inicio ?? dia.Inicio, turno?.Fim ?? dia.Fim, funcionamento);
         }
 
         var atuais = await _db.HorariosStaff.Where(h => h.UsuarioId == usuario.Id).ToListAsync(ct);

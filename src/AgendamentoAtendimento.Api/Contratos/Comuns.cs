@@ -382,6 +382,17 @@ public sealed record HorarioStaffDto(
     TimeOnly InicioEfetivo = default,
     TimeOnly FimEfetivo = default);
 
+/// <summary>
+/// Atrela alguém a um turno. `Dias` vazio vale a semana que a empresa abre — é o que
+/// "atrelar ao turno" quer dizer quando ninguém detalha.
+/// </summary>
+public sealed record AtrelarAoTurnoRequest(long TurnoId, IReadOnlyList<DayOfWeek>? Dias = null);
+
+/// <summary>Horário próprio de um dia, soltando a pessoa de qualquer turno.</summary>
+public sealed record HorarioProprioRequest(
+    DayOfWeek DiaDaSemana, TimeOnly Inicio, TimeOnly Fim,
+    TimeOnly? PausaInicio = null, TimeOnly? PausaFim = null, bool Trabalha = true);
+
 public sealed record HorarioStaffRequest(
     long UsuarioId, DayOfWeek DiaDaSemana, TimeOnly Inicio, TimeOnly Fim,
     TimeOnly? PausaInicio, TimeOnly? PausaFim, bool Trabalha = true,

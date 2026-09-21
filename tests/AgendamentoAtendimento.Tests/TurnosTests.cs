@@ -100,6 +100,61 @@ public class TurnosTests
         Assert.Null(escala.PausaInicioEfetiva);
     }
 
+    /// <summary>
+    /// As duas formas convivem na mesma semana da mesma pessoa: é o ponto de o turno ser
+    /// opcional. Uma escala só de turno, ou só de horário próprio, não precisaria dos
+    /// dois campos.
+    /// </summary>
+    [Fact]
+    public void Turno_e_horario_proprio_convivem_na_mesma_semana()
+    {
+        var semana = new List<HorarioStaff>
+        {
+            new()
+            {
+                TenantId = 1, UsuarioId = 1, DiaDaSemana = DayOfWeek.Monday,
+                TurnoId = 1, Turno = Manha(), Trabalha = true,
+                Inicio = new TimeOnly(9, 0), Fim = new TimeOnly(17, 0),
+            },
+            new()
+            {
+                TenantId = 1, UsuarioId = 1, DiaDaSemana = DayOfWeek.Wednesday,
+                Trabalha = true,
+                Inicio = new TimeOnly(13, 0), Fim = new TimeOnly(18, 0),
+            },
+        };
+
+        var comTurno = semana.Single(d => d.DiaDaSemana == DayOfWeek.Monday);
+        var proprio = semana.Single(d => d.DiaDaSemana == DayOfWeek.Wednesday);
+
+        Assert.Equal(new TimeOnly(8, 0), comTurno.InicioEfetivo);
+        Assert.Equal(new TimeOnly(13, 0), proprio.InicioEfetivo);
+        Assert.Null(proprio.TurnoId);
+    }
+
+    [Fact]
+    public void Soltar_do_turno_devolve_a_janela_propria()
+    {
+        // A linha guarda 09:00–17:00 por baixo do turno. Soltar sem pôr horário no lugar
+        // faria a pessoa valer por uma janela que ninguém escolheu — por isso o endpoint
+        // de horário próprio grava a janela junto com o `TurnoId = null`.
+        var escala = new HorarioStaff
+        {
+            TenantId = 1, UsuarioId = 1, DiaDaSemana = DayOfWeek.Monday,
+            TurnoId = 1, Turno = Manha(), Trabalha = true,
+            Inicio = new TimeOnly(9, 0), Fim = new TimeOnly(17, 0),
+        };
+        Assert.Equal(new TimeOnly(8, 0), escala.InicioEfetivo);
+
+        escala.TurnoId = null;
+        escala.Turno = null;
+        escala.Inicio = new TimeOnly(13, 0);
+        escala.Fim = new TimeOnly(18, 0);
+
+        Assert.Equal(new TimeOnly(13, 0), escala.InicioEfetivo);
+        Assert.Equal(new TimeOnly(18, 0), escala.FimEfetivo);
+    }
+
     [Fact]
     public void Turno_invertido_nao_tem_minutos_uteis_negativos()
     {
