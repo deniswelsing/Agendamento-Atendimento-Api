@@ -147,7 +147,14 @@ public sealed record NovoAgendamentoRequest(
     /// Quem presta cada serviço, na mesma ordem de <c>ItensIds</c>. Pode vir vazio — aí
     /// o servidor escolhe quem está livre e sabe fazer. Posição nula segue a mesma regra.
     /// </summary>
-    IReadOnlyList<long?>? ResponsaveisPorItem = null);
+    IReadOnlyList<long?>? ResponsaveisPorItem = null,
+    /// <summary>
+    /// A etapa de cada serviço, na mesma ordem de <c>ItensIds</c>. Serviços na MESMA etapa
+    /// acontecem ao mesmo tempo, cada um com a sua pessoa — o treinamento com uma e a
+    /// revisão de contrato com a outra, na mesma hora. Vazio é o de sempre: cada serviço
+    /// na sua etapa, um depois do outro.
+    /// </summary>
+    IReadOnlyList<int>? EtapasPorItem = null);
 
 /// <summary>Troca quem presta um serviço já marcado.</summary>
 public sealed record TrocarResponsavelRequest(long? ResponsavelId);
@@ -172,7 +179,7 @@ public sealed record AtribuicaoDto(
 
 public sealed record SlotDto(
     DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome,
-    /// <summary>Um por serviço, na ordem em que acontecem.</summary>
+    /// <summary>Um por serviço, na ordem em que foram pedidos.</summary>
     IReadOnlyList<AtribuicaoDto> Atribuicoes);
 
 /// <summary>O próximo dia com encaixe, quando o pedido não cabe no dia perguntado.</summary>

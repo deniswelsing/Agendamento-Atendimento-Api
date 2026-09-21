@@ -154,6 +154,31 @@ public class AgendamentosController : ControllerBaseApi
         return escolhas.Any(e => e is not null) ? escolhas : null;
     }
 
+    /// <summary>
+    /// A etapa de cada serviço, alinhada aos itens pedidos.
+    ///
+    /// Sem lista, ou com uma lista que não cobre tudo, cada serviço vira a sua própria
+    /// etapa — o atendimento em sequência. Negativo não existe: vira a etapa da posição.
+    /// </summary>
+    private static IReadOnlyList<int>? Etapas(
+        IReadOnlyList<long> itens, IReadOnlyList<int>? enviadas)
+    {
+        if (enviadas is null || enviadas.Count == 0 || itens.Count == 0)
+        {
+            return null;
+        }
+
+        var etapas = new List<int>(itens.Count);
+        for (var i = 0; i < itens.Count; i++)
+        {
+            var etapa = i < enviadas.Count ? enviadas[i] : i;
+            etapas.Add(etapa >= 0 ? etapa : i);
+        }
+
+        // Todas distintas é exatamente o comportamento padrão; não vale gastar parâmetro.
+        return etapas.Distinct().Count() == etapas.Count ? null : etapas;
+    }
+
     /// <summary>Encaixes livres de um dia, já considerando empresa, jornada e ocupação.</summary>
     /// <param name="responsaveisPorItem">
     /// Quem foi escolhido para cada serviço, na mesma ordem e no mesmo formato de
@@ -168,14 +193,16 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] long[]? itensIds,
         [FromQuery] long? responsavelId,
         [FromQuery] long?[]? responsaveisPorItem,
+        [FromQuery] int[]? etapasPorItem,
         CancellationToken ct = default)
     {
         var itens = itensIds ?? Array.Empty<long>();
         var escolhas = Escolhas(itens, responsaveisPorItem);
+        var etapas = Etapas(itens, etapasPorItem);
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
         var dia = await _disponibilidade.ObterDiaAsync(
-            data, duracao, responsavelId, ct, itens, null, escolhas);
+            data, duracao, responsavelId, ct, itens, null, escolhas, etapas);
 
         // Dia sem encaixe não é beco sem saída: o servidor já diz onde há o próximo.
         // Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem sabe
@@ -183,7 +210,8 @@ public class AgendamentosController : ControllerBaseApi
         if (dia.Livres.Count == 0 && itens.Length > 0)
         {
             var proxima = await _disponibilidade.ProximaOportunidadeAsync(
-                data.AddDays(1), itens, responsavelId, ct: ct, responsaveisPorItem: escolhas);
+                data.AddDays(1), itens, responsavelId, ct: ct,
+                responsaveisPorItem: escolhas, etapasPorItem: etapas);
 
             if (proxima is { } achado)
             {
@@ -208,6 +236,7 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] long[]? itensIds,
         [FromQuery] long? responsavelId,
         [FromQuery] long?[]? responsaveisPorItem,
+        [FromQuery] int[]? etapasPorItem,
         CancellationToken ct = default)
     {
         if (ate.DayNumber - de.DayNumber > 62)
@@ -221,7 +250,7 @@ public class AgendamentosController : ControllerBaseApi
         // com quem não presta o serviço, e o dia — que já filtra — mostraria menos.
         var dias = await _disponibilidade.ObterPeriodoAsync(
             de, ate, duracao, responsavelId, ct, itens,
-            Escolhas(itens, responsaveisPorItem));
+            Escolhas(itens, responsaveisPorItem), Etapas(itens, etapasPorItem));
         return Ok(dias.Select(d => d.ParaDto()).ToList());
     }
 
@@ -250,10 +279,12 @@ public class AgendamentosController : ControllerBaseApi
 
         var inicio = req.Inicio.ToUniversalTime();
 
+        var etapas = Etapas(req.ItensIds, req.EtapasPorItem);
+
         // Quem presta cada serviço: o que veio no pedido, e o resto o servidor resolve.
         // É a mesma conta que montou a grade, então o que a tela ofereceu é o que entra.
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
-            inicio, req.ItensIds, req.ResponsavelId, null, 0, ct);
+            inicio, req.ItensIds, req.ResponsavelId, null, 0, ct, etapas);
 
         if (atribuicoes is null)
         {
@@ -263,9 +294,10 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         atribuicoes = AplicarEscolhas(atribuicoes, req.ItensIds, req.ResponsaveisPorItem);
+        ValidarSimultaneos(atribuicoes, etapas);
         await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, null, ct);
 
-        var fim = atribuicoes[^1].Fim;
+        var fim = atribuicoes.Max(a => a.Fim);
 
         var agendamento = new Agendamento
         {
@@ -289,7 +321,8 @@ public class AgendamentosController : ControllerBaseApi
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
-                Ordem = ordem,
+                // `Ordem` é a etapa: serviços com a mesma acontecem ao mesmo tempo.
+                Ordem = etapas is null ? ordem : etapas[ordem],
                 ResponsavelId = atribuicoes[ordem].ResponsavelId,
             });
             ordem++;
@@ -334,10 +367,12 @@ public class AgendamentosController : ControllerBaseApi
 
         var inicio = req.Inicio.ToUniversalTime();
 
+        var etapas = Etapas(req.ItensIds, req.EtapasPorItem);
+
         // Ignora o próprio agendamento na conta: reagendar para o mesmo horário não pode
         // esbarrar no compromisso que está sendo movido.
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
-            inicio, req.ItensIds, req.ResponsavelId, id, 0, ct);
+            inicio, req.ItensIds, req.ResponsavelId, id, 0, ct, etapas);
 
         if (atribuicoes is null)
         {
@@ -347,11 +382,12 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         atribuicoes = AplicarEscolhas(atribuicoes, req.ItensIds, req.ResponsaveisPorItem);
+        ValidarSimultaneos(atribuicoes, etapas);
         await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, id, ct);
 
         agendamento.ClienteId = req.ClienteId;
         agendamento.Inicio = inicio;
-        agendamento.Fim = atribuicoes[^1].Fim;
+        agendamento.Fim = atribuicoes.Max(a => a.Fim);
         agendamento.ResponsavelId = atribuicoes[0].ResponsavelId;
         agendamento.Observacoes = req.Observacoes;
         agendamento.LocalAtendimento = req.LocalAtendimento;
@@ -367,7 +403,8 @@ public class AgendamentosController : ControllerBaseApi
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
-                Ordem = ordem,
+                // `Ordem` é a etapa: serviços com a mesma acontecem ao mesmo tempo.
+                Ordem = etapas is null ? ordem : etapas[ordem],
                 ResponsavelId = atribuicoes[ordem].ResponsavelId,
             });
             ordem++;
@@ -607,6 +644,33 @@ public class AgendamentosController : ControllerBaseApi
     }
 
     /// <summary>
+    /// Serviços que acontecem ao mesmo tempo precisam de pessoas diferentes: a mesma
+    /// pessoa estaria em dois lugares na mesma hora. A checagem de disponibilidade não
+    /// pega isto sozinha — o atendimento ainda não existe, então nada a ocupa.
+    /// </summary>
+    private static void ValidarSimultaneos(
+        IReadOnlyList<AtribuicaoDeServico> atribuicoes, IReadOnlyList<int>? etapas)
+    {
+        if (etapas is null)
+        {
+            return;
+        }
+
+        var repetida = atribuicoes
+            .Select((a, i) => (Etapa: etapas[i], a.ResponsavelId, a.Nome))
+            .GroupBy(x => (x.Etapa, x.ResponsavelId))
+            .FirstOrDefault(g => g.Count() > 1);
+
+        if (repetida is not null)
+        {
+            throw new RegraDeNegocioException(
+                $"A mesma pessoa não pode prestar \"{repetida.First().Nome}\" e "
+                + $"\"{repetida.Last().Nome}\" ao mesmo tempo.",
+                "SIMULTANEOS_MESMA_PESSOA");
+        }
+    }
+
+    /// <summary>
     /// Confere quem foi escolhido a dedo: tem de prestar aquele serviço e estar livre na
     /// janela dele. Sem isto, mandar um id qualquer furaria a regra pela porta dos fundos.
     /// </summary>
@@ -627,7 +691,7 @@ public class AgendamentosController : ControllerBaseApi
                 atribuicao.ResponsavelId,
                 atribuicao.ItemCatalogoId == 0 ? null : atribuicao.ItemCatalogoId,
                 atribuicao.Inicio, atribuicao.Fim, ignorarAgendamentoId, ct,
-                atribuicoes[0].Inicio, atribuicoes[^1].Fim);
+                atribuicoes.Min(a => a.Inicio), atribuicoes.Max(a => a.Fim));
 
             if (!pode)
             {

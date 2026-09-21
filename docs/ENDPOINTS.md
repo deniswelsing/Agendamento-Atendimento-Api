@@ -199,6 +199,24 @@ GET /api/agendamentos/disponibilidade?data=2026-09-21&itensIds=4&itensIds=3
 lê-se "a pessoa 7 faz o serviço 4 e, em seguida, a 9 faz o 3" — e a resposta só traz os
 horários em que **as duas** cabem.
 
+`etapasPorItem` diz o que acontece **ao mesmo tempo**. É a etapa de cada serviço, também
+por posição: etapas diferentes são um depois do outro, e serviços na MESMA etapa começam
+juntos, cada um com a sua pessoa.
+
+```
+GET /api/agendamentos/disponibilidade?data=2026-09-21&itensIds=4&itensIds=3
+    &etapasPorItem=0&etapasPorItem=0
+```
+
+O atendimento passa a durar o serviço **mais longo** da etapa, e não a soma: treinamento
+de 60 com revisão de contrato de 30, ao mesmo tempo, é uma hora — e prende duas pessoas
+nessa hora. A mesma pessoa nos dois é recusada (`SIMULTANEOS_MESMA_PESSOA`): ela estaria
+em dois lugares na mesma hora. Sem a lista, cada serviço é a sua própria etapa — o
+atendimento em sequência, que é o de sempre.
+
+No banco, quem guarda isso é `Ordem` do item, que passou a ser a etapa. Atendimento
+sequencial continua sendo ordens distintas, que é como tudo o que já existe foi gravado.
+
 Devolve, por dia: se a empresa abre, a janela, a pausa, o motivo de estar fechado, o
 intervalo de encaixe, quantos atendimentos já existem e a lista de horários livres **com a
 pessoa do time que atende cada um**.

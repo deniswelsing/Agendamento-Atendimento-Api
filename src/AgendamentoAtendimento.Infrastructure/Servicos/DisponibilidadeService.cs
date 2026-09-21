@@ -173,6 +173,12 @@ public class DisponibilidadeService
     /// contagem do dia, o motivo de não ter encaixe e o "próximo dia com vaga" saírem de
     /// uma conta diferente da que a tela mostra.
     /// </param>
+    /// <param name="etapasPorItem">
+    /// A etapa de cada serviço, na ordem de <paramref name="itensIds"/>. Serviços na mesma
+    /// etapa acontecem AO MESMO TEMPO, cada um com a sua pessoa; etapas diferentes são um
+    /// depois do outro. Sem isto, cada serviço é a sua própria etapa — o atendimento em
+    /// sequência, que é o de sempre.
+    /// </param>
     public async Task<DiaDaAgenda> ObterDiaAsync(
         DateOnly data,
         int duracaoMinutos,
@@ -181,7 +187,8 @@ public class DisponibilidadeService
         IReadOnlyCollection<long>? itensIds = null,
         // Agendamento a desconsiderar — é o que faz reagendar não esbarrar em si mesmo.
         long? ignorarAgendamentoId = null,
-        IReadOnlyList<long?>? responsaveisPorItem = null)
+        IReadOnlyList<long?>? responsaveisPorItem = null,
+        IReadOnlyList<int>? etapasPorItem = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -221,8 +228,9 @@ public class DisponibilidadeService
 
         // A sequência de serviços do encaixe. Sem itens, é um bloco só, de qualquer
         // duração pedida — é como as telas que ainda não escolheram serviço perguntam.
-        var sequencia = await SequenciaAsync(itensIds, duracaoMinutos > 0 ? duracaoMinutos : intervalo, ct);
-        var duracaoTotal = sequencia.Sum(x => x.Duracao);
+        var sequencia = await SequenciaAsync(
+            itensIds, duracaoMinutos > 0 ? duracaoMinutos : intervalo, ct, etapasPorItem);
+        var duracaoTotal = DuracaoTotal(sequencia);
 
         // Quem pode prestar cada serviço. Serviço sem ninguém marcado é aberto a todos.
         var habilitados = new List<List<Usuario>>();
@@ -395,8 +403,10 @@ public class DisponibilidadeService
             }
 
             livres.Add(new SlotDisponivel(
-                atribuicoes[0].Inicio,
-                atribuicoes[^1].Fim,
+                atribuicoes.Min(a => a.Inicio),
+                // O fim é o do serviço que termina por último, e não o do último da
+                // lista: com serviços ao mesmo tempo o mais longo pode estar no meio.
+                atribuicoes.Max(a => a.Fim),
                 atribuicoes[0].ResponsavelId,
                 atribuicoes[0].ResponsavelNome,
                 atribuicoes));
@@ -445,7 +455,7 @@ public class DisponibilidadeService
     /// criar um agendamento que já nasce por cima de outro compromisso dela.
     /// </summary>
     private static List<AtribuicaoDeServico>? MontarCadeia(
-        IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao)> sequencia,
+        IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao, int Etapa)> sequencia,
         IReadOnlyList<List<Usuario>> habilitados,
         TimeOnly inicio,
         DateOnly data,
@@ -454,55 +464,111 @@ public class DisponibilidadeService
         /// <summary>Capacidade e inscritos da sessão, para a tela poder dizer "3 de 8".</summary>
         Func<long?, long, DateTimeOffset, DateTimeOffset, (int Capacidade, int Inscritos)> vagas)
     {
-        var atribuicoes = new List<AtribuicaoDeServico>(sequencia.Count);
+        // Guardadas na posição em que o serviço foi pedido, e não na ordem em que a
+        // cadeia as monta: com etapas fora de ordem as duas listas divergiriam, e quem
+        // casa escolha com serviço por posição — o POST — passaria a casar errado.
+        var porPosicao = new AtribuicaoDeServico?[sequencia.Count];
         var cursor = inicio;
         Usuario? anterior = null;
 
-        var fimDoAtendimento = AdicionarMinutos(inicio, sequencia.Sum(e => e.Duracao));
+        var fimDoAtendimento = AdicionarMinutos(inicio, DuracaoTotal(sequencia));
 
-        for (var i = 0; i < sequencia.Count; i++)
+        // Índices agrupados por etapa, na ordem em que as etapas aparecem. O que está na
+        // mesma etapa acontece ao mesmo tempo.
+        // Ordenadas pelo número da etapa, e não pela ordem em que os serviços foram
+        // pedidos: é o número que diz o que vem antes.
+        foreach (var etapa in sequencia
+                     .Select((e, i) => (Indice: i, Passo: e))
+                     .GroupBy(x => x.Passo.Etapa)
+                     .OrderBy(g => g.Key))
         {
-            var etapa = sequencia[i];
-            var fim = AdicionarMinutos(cursor, etapa.Duracao);
+            var doPasso = etapa.ToList();
+            var fimDaEtapa = cursor;
 
-            var (deChecagem, ateChecagem) = modo == ModoDeOcupacao.PorFuncionario
-                ? (inicio, fimDoAtendimento)
-                : (cursor, fim);
+            // Duas coisas ao mesmo tempo não podem ser da mesma pessoa: ela estaria em
+            // dois lugares na mesma hora. Quem já pegou um serviço desta etapa sai da
+            // conta dos outros.
+            var jaNaEtapa = new HashSet<long>();
 
-            var candidatos = habilitados[i]
-                .Where(quem => podeAtender(quem, deChecagem, ateChecagem, etapa.ItemCatalogoId))
-                .ToList();
-            if (candidatos.Count == 0)
+            foreach (var (indice, passo) in doPasso)
             {
-                return null;
+                var fim = AdicionarMinutos(cursor, passo.Duracao);
+
+                var (deChecagem, ateChecagem) = modo == ModoDeOcupacao.PorFuncionario
+                    ? (inicio, fimDoAtendimento)
+                    : (cursor, fim);
+
+                var candidatos = habilitados[indice]
+                    .Where(quem => !jaNaEtapa.Contains(quem.Id))
+                    .Where(quem => podeAtender(quem, deChecagem, ateChecagem, passo.ItemCatalogoId))
+                    .ToList();
+                if (candidatos.Count == 0)
+                {
+                    return null;
+                }
+
+                // Continuidade só vale entre etapas: dentro da etapa a pessoa anterior é
+                // justamente quem NÃO pode pegar o serviço de agora.
+                var escolhido = doPasso.Count == 1
+                    ? candidatos.FirstOrDefault(quem => quem.Id == anterior?.Id) ?? candidatos[0]
+                    : candidatos[0];
+
+                var (capacidade, jaInscritos) = vagas(
+                    passo.ItemCatalogoId, escolhido.Id, Combinar(data, cursor), Combinar(data, fim));
+
+                porPosicao[indice] = new AtribuicaoDeServico(
+                    passo.ItemCatalogoId ?? 0, passo.Nome,
+                    Combinar(data, cursor), Combinar(data, fim),
+                    escolhido.Id, escolhido.Nome,
+                    candidatos.Select(c => new PessoaResumo(c.Id, c.Nome)).ToList(),
+                    capacidade, jaInscritos);
+
+                jaNaEtapa.Add(escolhido.Id);
+                if (fim > fimDaEtapa)
+                {
+                    fimDaEtapa = fim;
+                }
             }
 
-            var escolhido = candidatos.FirstOrDefault(quem => quem.Id == anterior?.Id) ?? candidatos[0];
+            // Quem segue para a próxima etapa é quem estava sozinho nesta: com duas
+            // pessoas em paralelo não há "a mesma pessoa" para continuar.
+            anterior = doPasso.Count == 1
+                ? habilitados[doPasso[0].Indice]
+                    .FirstOrDefault(u => u.Id == porPosicao[doPasso[0].Indice]!.ResponsavelId)
+                : null;
 
-            var (capacidade, jaInscritos) = vagas(
-                etapa.ItemCatalogoId, escolhido.Id, Combinar(data, cursor), Combinar(data, fim));
-
-            atribuicoes.Add(new AtribuicaoDeServico(
-                etapa.ItemCatalogoId ?? 0, etapa.Nome,
-                Combinar(data, cursor), Combinar(data, fim),
-                escolhido.Id, escolhido.Nome,
-                candidatos.Select(c => new PessoaResumo(c.Id, c.Nome)).ToList(),
-                capacidade, jaInscritos));
-
-            anterior = escolhido;
-            cursor = fim;
+            cursor = fimDaEtapa;
         }
 
-        return atribuicoes;
+        return porPosicao.Select(a => a!).ToList();
     }
 
-    /// <summary>Os serviços pedidos, na ordem, com nome e duração.</summary>
-    private async Task<IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao)>> SequenciaAsync(
-        IReadOnlyCollection<long>? itensIds, int duracaoPadrao, CancellationToken ct)
+    /// <summary>
+    /// Quanto o atendimento inteiro dura: a soma das etapas, e cada etapa vale o serviço
+    /// mais longo dela. Somar tudo daria um atendimento mais longo do que ele é quando
+    /// duas pessoas atendem ao mesmo tempo.
+    /// </summary>
+    private static int DuracaoTotal(
+        IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao, int Etapa)> sequencia) =>
+        sequencia.GroupBy(e => e.Etapa).Sum(g => g.Max(e => e.Duracao));
+
+    /// <summary>
+    /// Os serviços pedidos, na ordem, com nome, duração e ETAPA.
+    ///
+    /// A etapa é o que diz o que acontece junto: mesma etapa é ao mesmo tempo, etapas
+    /// diferentes são um depois do outro. Sem <paramref name="etapasPorItem"/> cada
+    /// serviço é a sua própria etapa — o atendimento em sequência, que é o de sempre.
+    /// </summary>
+    private async Task<IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao, int Etapa)>>
+        SequenciaAsync(
+            IReadOnlyCollection<long>? itensIds,
+            int duracaoPadrao,
+            CancellationToken ct,
+            IReadOnlyList<int>? etapasPorItem = null)
     {
         if (itensIds is null || itensIds.Count == 0)
         {
-            return new[] { ((long?)null, "Atendimento", duracaoPadrao) };
+            return new[] { ((long?)null, "Atendimento", duracaoPadrao, 0) };
         }
 
         var itens = await _db.ItensCatalogo.AsNoTracking()
@@ -511,9 +577,13 @@ public class DisponibilidadeService
 
         // Respeita a ordem em que os serviços foram pedidos: é ela que define a sequência.
         return itensIds
-            .Select(id => itens.FirstOrDefault(i => i.Id == id))
-            .Where(i => i is not null)
-            .Select(i => ((long?)i!.Id, i.Nome, Math.Max(1, i.DuracaoMinutos ?? duracaoPadrao)))
+            .Select((id, posicao) => (Item: itens.FirstOrDefault(i => i.Id == id), Posicao: posicao))
+            .Where(x => x.Item is not null)
+            .Select(x => ((long?)x.Item!.Id, x.Item.Nome,
+                Math.Max(1, x.Item.DuracaoMinutos ?? duracaoPadrao),
+                etapasPorItem is not null && x.Posicao < etapasPorItem.Count
+                    ? etapasPorItem[x.Posicao]
+                    : x.Posicao))
             .ToList();
     }
 
@@ -689,13 +759,14 @@ public class DisponibilidadeService
         CancellationToken ct = default,
         // As escolhas viajam junto: um "próximo dia com vaga" que ignorasse quem foi
         // escolhido mandaria a tela para um dia que ela mesma mostraria vazio.
-        IReadOnlyList<long?>? responsaveisPorItem = null)
+        IReadOnlyList<long?>? responsaveisPorItem = null,
+        IReadOnlyList<int>? etapasPorItem = null)
     {
         for (var i = 0; i <= limiteDias; i++)
         {
             var data = de.AddDays(i);
             var dia = await ObterDiaAsync(
-                data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem);
+                data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem, etapasPorItem);
             if (dia.Livres.Count > 0)
             {
                 return (data, dia.Livres[0]);
@@ -713,7 +784,8 @@ public class DisponibilidadeService
         long? responsavelId = null,
         CancellationToken ct = default,
         IReadOnlyCollection<long>? itensIds = null,
-        IReadOnlyList<long?>? responsaveisPorItem = null)
+        IReadOnlyList<long?>? responsaveisPorItem = null,
+        IReadOnlyList<int>? etapasPorItem = null)
     {
         if (ate < de)
         {
@@ -726,7 +798,8 @@ public class DisponibilidadeService
             // A semana conta o que o dia mostra: sem as escolhas aqui, o calendário
             // prometeria encaixe em dias que a tela abriria vazios.
             dias.Add(await ObterDiaAsync(
-                data, duracaoMinutos, responsavelId, ct, itensIds, null, responsaveisPorItem));
+                data, duracaoMinutos, responsavelId, ct, itensIds, null,
+                responsaveisPorItem, etapasPorItem));
         }
         return dias;
     }
@@ -757,11 +830,13 @@ public class DisponibilidadeService
         long? responsavelId = null,
         long? ignorarAgendamentoId = null,
         int duracaoMinutos = 0,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyList<int>? etapasPorItem = null)
     {
         var data = DateOnly.FromDateTime(inicio.UtcDateTime);
         var dia = await ObterDiaAsync(
-            data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId);
+            data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId,
+            null, etapasPorItem);
 
         if (!dia.Aberto)
         {

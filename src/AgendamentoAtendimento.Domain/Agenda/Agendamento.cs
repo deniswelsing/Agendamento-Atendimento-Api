@@ -105,20 +105,42 @@ public class Agendamento : EntidadeDeTenant
     public int DuracaoMinutos => (int)(Fim - Inicio).TotalMinutes;
 
     /// <summary>
-    /// Os serviços na ordem em que acontecem, cada um já com a sua janela. Os serviços
-    /// são sequenciais: o cliente faz um, depois o outro — por isso pessoas diferentes
-    /// podem prestá-los sem conflito.
+    /// Os serviços na ordem em que acontecem, cada um já com a sua janela.
+    ///
+    /// <see cref="AgendamentoItem.Ordem"/> é a ETAPA: serviços com a mesma ordem começam
+    /// juntos — duas pessoas atendendo o mesmo cliente ao mesmo tempo, o treinamento com
+    /// uma e a revisão de contrato com a outra —, e a etapa só acaba quando o mais longo
+    /// dela acaba. Ordens diferentes são o que sempre foram: um depois do outro.
+    ///
+    /// Sendo a etapa o agrupador, o atendimento inteiramente sequencial continua sendo o
+    /// caso de ordens distintas, que é como tudo o que já existe foi gravado.
     /// </summary>
     public IEnumerable<(AgendamentoItem Item, DateTimeOffset Inicio, DateTimeOffset Fim)> Janelas()
     {
         var cursor = Inicio;
-        foreach (var item in Itens.OrderBy(i => i.Ordem).ThenBy(i => i.Id))
+        foreach (var etapa in Itens.OrderBy(i => i.Ordem).ThenBy(i => i.Id).GroupBy(i => i.Ordem))
         {
-            var fim = cursor.AddMinutes(item.DuracaoMinutos * item.Quantidade);
-            yield return (item, cursor, fim);
-            cursor = fim;
+            var fimDaEtapa = cursor;
+            foreach (var item in etapa)
+            {
+                var fim = cursor.AddMinutes(item.DuracaoMinutos * item.Quantidade);
+                yield return (item, cursor, fim);
+                if (fim > fimDaEtapa)
+                {
+                    fimDaEtapa = fim;
+                }
+            }
+
+            cursor = fimDaEtapa;
         }
     }
+
+    /// <summary>
+    /// Há serviços acontecendo ao mesmo tempo — e, portanto, mais de uma pessoa presa ao
+    /// atendimento na mesma hora. A tela usa isto para dizer ao cliente o que esperar.
+    /// </summary>
+    public bool TemServicosSimultaneos =>
+        Itens.GroupBy(i => i.Ordem).Any(g => g.Count() > 1);
 
     /// <summary>
     /// Quem está ocupado por causa deste agendamento, e quando.
@@ -271,7 +293,11 @@ public class AgendamentoItem : EntidadeDeTenant
     public int Quantidade { get; set; } = 1;
     public decimal PrecoUnitario { get; set; }
 
-    /// <summary>Posição na sequência. É o que define a janela de cada serviço.</summary>
+    /// <summary>
+    /// A etapa do atendimento. É o que define a janela de cada serviço: etapas diferentes
+    /// acontecem uma depois da outra, e serviços na MESMA etapa acontecem ao mesmo tempo,
+    /// cada um com a sua pessoa.
+    /// </summary>
     public int Ordem { get; set; }
 
     /// <summary>
