@@ -163,6 +163,16 @@ public class DisponibilidadeService
         return (agendamentos.Count, porPessoa);
     }
 
+    /// <param name="responsaveisPorItem">
+    /// Quem foi escolhido para cada serviço, na ordem de <paramref name="itensIds"/>.
+    /// Posição nula é "quem estiver livre".
+    ///
+    /// Existe porque um atendimento passa por mais de uma pessoa: a Ana faz a manicure e
+    /// o Bruno, em seguida, a hidratação. Pedir isso com o <paramref name="responsavelId"/>
+    /// — que é "uma pessoa só faz tudo" — não dá, e deixar a tela recortar depois faria a
+    /// contagem do dia, o motivo de não ter encaixe e o "próximo dia com vaga" saírem de
+    /// uma conta diferente da que a tela mostra.
+    /// </param>
     public async Task<DiaDaAgenda> ObterDiaAsync(
         DateOnly data,
         int duracaoMinutos,
@@ -170,7 +180,8 @@ public class DisponibilidadeService
         CancellationToken ct = default,
         IReadOnlyCollection<long>? itensIds = null,
         // Agendamento a desconsiderar — é o que faz reagendar não esbarrar em si mesmo.
-        long? ignorarAgendamentoId = null)
+        long? ignorarAgendamentoId = null,
+        IReadOnlyList<long?>? responsaveisPorItem = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -215,12 +226,39 @@ public class DisponibilidadeService
 
         // Quem pode prestar cada serviço. Serviço sem ninguém marcado é aberto a todos.
         var habilitados = new List<List<Usuario>>();
-        foreach (var etapa in sequencia)
+
+        // A escolha de quem presta cada serviço entra aqui, e não depois: ela muda quais
+        // horários existem. Quem foi escolhido e não sabe fazer aquilo aparece à parte,
+        // porque "ninguém do time presta esse serviço" seria mentira nesse caso.
+        string? escolhaImpossivel = null;
+        for (var i = 0; i < sequencia.Count; i++)
         {
-            habilitados.Add(etapa.ItemCatalogoId is { } id
+            var etapa = sequencia[i];
+            var podem = etapa.ItemCatalogoId is { } id
                 ? await FiltrarPorHabilidadeAsync(atendentes, new[] { id }, ct)
-                : atendentes);
+                : atendentes;
+
+            var escolhido = responsaveisPorItem is not null && i < responsaveisPorItem.Count
+                ? responsaveisPorItem[i]
+                : null;
+
+            if (escolhido is { } quem)
+            {
+                var so = podem.Where(p => p.Id == quem).ToList();
+                if (so.Count == 0 && podem.Count > 0)
+                {
+                    var nome = atendentes.FirstOrDefault(a => a.Id == quem)?.Nome
+                        ?? "Quem você escolheu";
+                    escolhaImpossivel ??= $"{nome} não presta {etapa.Nome}.";
+                }
+
+                podem = so;
+            }
+
+            habilitados.Add(podem);
         }
+
+        var temEscolha = responsaveisPorItem?.Any(r => r is not null) == true;
 
         // Ocupação por pessoa, no modo que a empresa escolheu: a união das janelas dos
         // itens dela, ou o atendimento inteiro.
@@ -372,14 +410,21 @@ public class DisponibilidadeService
 
         var motivo = ordenados.Count > 0
             ? null
-            : habilitados.Any(h => h.Count == 0)
+            : escolhaImpossivel is not null
+                ? escolhaImpossivel
+                : habilitados.Any(h => h.Count == 0)
                 ? "Ninguém do time presta esse serviço."
                 // "Ninguém está livre" seria mentira quando o que fechou o dia foi o
                 // teto, e não a agenda.
                 : todosNoTeto
                     ? $"Todo o time já bateu o teto de {politica.LimitePorPessoa} "
                       + "atendimento(s) por dia."
-                    : "Ninguém que presta esse serviço está livre neste dia.";
+                    // Com pessoas escolhidas, o dia vazio quase sempre é a agenda delas —
+                    // e não a do time. Dizer "ninguém está livre" mandaria procurar outro
+                    // dia quando bastava soltar uma escolha.
+                    : temEscolha
+                        ? "Quem você escolheu não tem horário livre neste dia."
+                        : "Ninguém que presta esse serviço está livre neste dia.";
 
         return new DiaDaAgenda(
             data, true, abertura, fechamento, pausaInicio, pausaFim, null,
@@ -641,12 +686,16 @@ public class DisponibilidadeService
         IReadOnlyCollection<long> itensIds,
         long? responsavelId = null,
         int limiteDias = 30,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        // As escolhas viajam junto: um "próximo dia com vaga" que ignorasse quem foi
+        // escolhido mandaria a tela para um dia que ela mesma mostraria vazio.
+        IReadOnlyList<long?>? responsaveisPorItem = null)
     {
         for (var i = 0; i <= limiteDias; i++)
         {
             var data = de.AddDays(i);
-            var dia = await ObterDiaAsync(data, 0, responsavelId, ct, itensIds);
+            var dia = await ObterDiaAsync(
+                data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem);
             if (dia.Livres.Count > 0)
             {
                 return (data, dia.Livres[0]);
@@ -663,7 +712,8 @@ public class DisponibilidadeService
         int duracaoMinutos,
         long? responsavelId = null,
         CancellationToken ct = default,
-        IReadOnlyCollection<long>? itensIds = null)
+        IReadOnlyCollection<long>? itensIds = null,
+        IReadOnlyList<long?>? responsaveisPorItem = null)
     {
         if (ate < de)
         {
@@ -673,7 +723,10 @@ public class DisponibilidadeService
         var dias = new List<DiaDaAgenda>();
         for (var data = de; data <= ate; data = data.AddDays(1))
         {
-            dias.Add(await ObterDiaAsync(data, duracaoMinutos, responsavelId, ct, itensIds));
+            // A semana conta o que o dia mostra: sem as escolhas aqui, o calendário
+            // prometeria encaixe em dias que a tela abriria vazios.
+            dias.Add(await ObterDiaAsync(
+                data, duracaoMinutos, responsavelId, ct, itensIds, null, responsaveisPorItem));
         }
         return dias;
     }

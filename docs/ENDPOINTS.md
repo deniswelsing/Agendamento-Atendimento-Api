@@ -187,6 +187,18 @@ GET /api/agendamentos/disponibilidade?data=2026-09-21&itensIds=3&itensIds=5&resp
 GET /api/agendamentos/disponibilidade/periodo?de=2026-09-01&ate=2026-09-30&itensIds=3
 ```
 
+`responsaveisPorItem` pede o encaixe para pessoas escolhidas, uma por serviço, casando
+com `itensIds` **por posição** — a mesma forma do `POST`. Na query string **zero é "quem
+estiver livre"**: a posição precisa sobreviver, e uma lista de query não carrega nulo.
+
+```
+GET /api/agendamentos/disponibilidade?data=2026-09-21&itensIds=4&itensIds=3
+    &responsaveisPorItem=7&responsaveisPorItem=9
+```
+
+lê-se "a pessoa 7 faz o serviço 4 e, em seguida, a 9 faz o 3" — e a resposta só traz os
+horários em que **as duas** cabem.
+
 Devolve, por dia: se a empresa abre, a janela, a pausa, o motivo de estar fechado, o
 intervalo de encaixe, quantos atendimentos já existem e a lista de horários livres **com a
 pessoa do time que atende cada um**.
@@ -270,6 +282,14 @@ continua nele quando pode; trocar só acontece quando não dá para continuar.
 Um serviço sem ninguém livre derruba o encaixe inteiro: um atendimento pela metade não é
 um horário que se possa oferecer. E `responsavelId` na consulta é o pedido de que **uma
 pessoa só** faça tudo — é assim que a tela procura encaixe para quem quer um nome fixo.
+
+Quando a tela já escolheu quem faz o quê, a escolha vai na pergunta, em
+`responsaveisPorItem`, e não num recorte da resposta. É o que mantém a contagem do dia, o
+motivo de não haver encaixe e o `proxima` falando da mesma coisa que a lista mostra: com
+as escolhas de fora, o dia vazio culpava o time (`"Ninguém que presta esse serviço está
+livre neste dia"`) quando o que faltava era a agenda de uma pessoa, e o `proxima`
+apontava um dia que a tela abriria vazio. Escolha impossível é dita pelo nome — `"Bruno
+não presta Manicure."`
 
 `/periodo` aplica o mesmo filtro que `/disponibilidade`, desde que receba os mesmos
 `itensIds`: sem eles a semana contaria encaixes com quem não presta o serviço, e o dia

@@ -129,19 +129,53 @@ public class AgendamentosController : ControllerBaseApi
         return Ok(agendamento.ParaDto(await StatusDaVendaAsync(agendamento, ct)));
     }
 
+    /// <summary>
+    /// As escolhas de quem presta cada serviço, alinhadas aos itens pedidos.
+    ///
+    /// Zero e valores vazios viram "quem estiver livre": a query string não tem como
+    /// dizer "nulo na posição 1", e uma tela que manda `responsaveisPorItem=&...=7` não
+    /// pode virar 400 por causa disso. Sobra é ignorada; falta completa com nulo.
+    /// </summary>
+    private static IReadOnlyList<long?>? Escolhas(
+        IReadOnlyList<long> itens, IReadOnlyList<long?>? enviados)
+    {
+        if (enviados is null || enviados.Count == 0 || itens.Count == 0)
+        {
+            return null;
+        }
+
+        var escolhas = new List<long?>(itens.Count);
+        for (var i = 0; i < itens.Count; i++)
+        {
+            var quem = i < enviados.Count ? enviados[i] : null;
+            escolhas.Add(quem is > 0 ? quem : null);
+        }
+
+        return escolhas.Any(e => e is not null) ? escolhas : null;
+    }
+
     /// <summary>Encaixes livres de um dia, já considerando empresa, jornada e ocupação.</summary>
+    /// <param name="responsaveisPorItem">
+    /// Quem foi escolhido para cada serviço, na mesma ordem e no mesmo formato de
+    /// <c>POST /api/agendamentos</c>: posição vazia é "quem estiver livre". É assim que a
+    /// tela pede "a Ana faz a manicure e o Bruno, depois, a hidratação" — o
+    /// <c>responsavelId</c> continua sendo o pedido de que uma pessoa só faça tudo.
+    /// </param>
     [HttpGet("disponibilidade")]
     [RequerPermissao("agenda.ver")]
     public async Task<ActionResult<DiaDaAgendaDto>> Disponibilidade(
         [FromQuery] DateOnly data,
         [FromQuery] long[]? itensIds,
         [FromQuery] long? responsavelId,
+        [FromQuery] long?[]? responsaveisPorItem,
         CancellationToken ct = default)
     {
         var itens = itensIds ?? Array.Empty<long>();
+        var escolhas = Escolhas(itens, responsaveisPorItem);
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
-        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, responsavelId, ct, itens);
+        var dia = await _disponibilidade.ObterDiaAsync(
+            data, duracao, responsavelId, ct, itens, null, escolhas);
 
         // Dia sem encaixe não é beco sem saída: o servidor já diz onde há o próximo.
         // Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem sabe
@@ -149,7 +183,7 @@ public class AgendamentosController : ControllerBaseApi
         if (dia.Livres.Count == 0 && itens.Length > 0)
         {
             var proxima = await _disponibilidade.ProximaOportunidadeAsync(
-                data.AddDays(1), itens, responsavelId, ct: ct);
+                data.AddDays(1), itens, responsavelId, ct: ct, responsaveisPorItem: escolhas);
 
             if (proxima is { } achado)
             {
@@ -173,6 +207,7 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] DateOnly ate,
         [FromQuery] long[]? itensIds,
         [FromQuery] long? responsavelId,
+        [FromQuery] long?[]? responsaveisPorItem,
         CancellationToken ct = default)
     {
         if (ate.DayNumber - de.DayNumber > 62)
@@ -184,7 +219,9 @@ public class AgendamentosController : ControllerBaseApi
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens também dizem quem pode prestar: sem eles, a semana contaria encaixes
         // com quem não presta o serviço, e o dia — que já filtra — mostraria menos.
-        var dias = await _disponibilidade.ObterPeriodoAsync(de, ate, duracao, responsavelId, ct, itens);
+        var dias = await _disponibilidade.ObterPeriodoAsync(
+            de, ate, duracao, responsavelId, ct, itens,
+            Escolhas(itens, responsaveisPorItem));
         return Ok(dias.Select(d => d.ParaDto()).ToList());
     }
 
