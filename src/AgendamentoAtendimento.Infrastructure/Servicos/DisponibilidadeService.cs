@@ -775,6 +775,46 @@ public class DisponibilidadeService
             .Select(e => e.UsuarioId)
             .ToListAsync(ct);
 
+
+    /// <summary>
+    /// Quem pode pegar este serviço nesta janela: presta aquilo E está livre agora,
+    /// desconsiderando o próprio atendimento que está sendo remanejado — senão quem já
+    /// está nele apareceria como ocupado por si mesmo.
+    ///
+    /// Existe para a tela não precisar oferecer o time inteiro e deixar o servidor
+    /// recusar depois. Mostrar quem não pode é prometer uma troca que não acontece, e a
+    /// pessoa só descobre no erro.
+    ///
+    /// Passa por PodePrestarAsync, um a um, de propósito: é a MESMA regra que valida a
+    /// troca. Uma segunda implementação aqui acabaria discordando dela.
+    /// </summary>
+    public async Task<IReadOnlyList<PessoaResumo>> QuemPodePrestarAsync(
+        long? itemCatalogoId,
+        DateTimeOffset inicio,
+        DateTimeOffset fim,
+        long? ignorarAgendamentoId = null,
+        CancellationToken ct = default,
+        DateTimeOffset? atendimentoInicio = null,
+        DateTimeOffset? atendimentoFim = null)
+    {
+        var atendentes = await AtendentesAsync(null, ct);
+        var livres = new List<PessoaResumo>();
+
+        foreach (var quem in atendentes)
+        {
+            var pode = await PodePrestarAsync(
+                quem.Id, itemCatalogoId, inicio, fim, ignorarAgendamentoId, ct,
+                atendimentoInicio, atendimentoFim);
+
+            if (pode)
+            {
+                livres.Add(new PessoaResumo(quem.Id, quem.Nome));
+            }
+        }
+
+        return livres;
+    }
+
     private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct) =>
         await _db.Usuarios
             .AsNoTracking()

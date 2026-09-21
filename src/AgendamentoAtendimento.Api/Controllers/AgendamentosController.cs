@@ -428,6 +428,36 @@ public class AgendamentosController : ControllerBaseApi
     /// A pessoa nova precisa prestar aquele serviço e estar livre na janela dele. Nulo
     /// devolve o serviço para quem responde pelo atendimento.
     /// </summary>
+    /// <summary>
+    /// Quem pode pegar este serviço deste atendimento: presta aquilo e está livre na
+    /// janela dele. É a lista que a tela mostra ao trocar — oferecer o time inteiro e
+    /// deixar a Api recusar depois é prometer o que não vai acontecer.
+    /// </summary>
+    [HttpGet("{id:long}/itens/{itemId:long}/candidatos")]
+    [RequerPermissao("agenda.ver")]
+    public async Task<ActionResult<IReadOnlyList<PessoaResumoDto>>> CandidatosDoItem(
+        long id, long itemId, CancellationToken ct)
+    {
+        var agendamento = NaoNulo(
+            await SomenteVisiveis(_db.Agendamentos).Include(a => a.Itens)
+                .FirstOrDefaultAsync(a => a.Id == id, ct),
+            "Agendamento não encontrado.");
+
+        var item = NaoNulo(
+            agendamento.Itens.FirstOrDefault(i => i.Id == itemId),
+            "Serviço não encontrado neste agendamento.");
+
+        var janela = agendamento.Janelas().First(j => j.Item.Id == itemId);
+
+        // Ignora o próprio atendimento: quem já está nele não está "ocupado" para efeito
+        // desta troca — estaria ocupado consigo mesmo.
+        var livres = await _disponibilidade.QuemPodePrestarAsync(
+            item.ItemCatalogoId, janela.Inicio, janela.Fim, id, ct,
+            agendamento.Inicio, agendamento.Fim);
+
+        return Ok(livres.Select(p => new PessoaResumoDto(p.UsuarioId, p.Nome)).ToList());
+    }
+
     [HttpPatch("{id:long}/itens/{itemId:long}/responsavel")]
     [RequerPermissao("agenda.editar")]
     public async Task<ActionResult<AgendamentoDto>> TrocarResponsavelDoItem(
