@@ -52,8 +52,7 @@ public class AgendamentosController : ControllerBaseApi
         var inicio = new DateTimeOffset(de.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
         var fim = new DateTimeOffset(ate.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
 
-        var agendamentos = await _db.Agendamentos
-            .AsNoTracking()
+        var agendamentos = await SomenteVisiveis(_db.Agendamentos.AsNoTracking())
             .Include(a => a.Cliente)
             .Include(a => a.Responsavel)
             .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
@@ -66,6 +65,17 @@ public class AgendamentosController : ControllerBaseApi
 
         return Ok(agendamentos.Select(a => a.ParaDto()).ToList());
     }
+
+    /// <summary>
+    /// Quem não tem `agenda.ver-todos` enxerga só o que ele mesmo atende. É o servidor
+    /// que corta — deixar isso para a tela seria mandar os dados e pedir para não olhar.
+    ///
+    /// "Meu" inclui o atendimento em que a pessoa presta QUALQUER serviço, não só aquele
+    /// em que ela responde pelo todo: desde que cada serviço tem o seu responsável, um
+    /// atendimento passa por mais de uma pessoa, e quem entra nele precisa vê-lo.
+    /// </summary>
+    private IQueryable<Agendamento> SomenteVisiveis(IQueryable<Agendamento> consulta) =>
+        VisibilidadeDaAgenda.Aplicar(consulta, PermissoesDoUsuario, UsuarioId);
 
     [HttpGet("{id:long}")]
     [RequerPermissao("agenda.ver")]
@@ -221,7 +231,7 @@ public class AgendamentosController : ControllerBaseApi
         long id, NovoAgendamentoRequest req, CancellationToken ct)
     {
         var agendamento = NaoNulo(
-            await _db.Agendamentos.Include(a => a.Itens).FirstOrDefaultAsync(a => a.Id == id, ct),
+            await SomenteVisiveis(_db.Agendamentos).Include(a => a.Itens).FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
 
         if (agendamento.Status is StatusAgendamento.Concluido or StatusAgendamento.Cancelado)
@@ -300,7 +310,7 @@ public class AgendamentosController : ControllerBaseApi
         long id, AlterarStatusRequest req, CancellationToken ct)
     {
         var agendamento = NaoNulo(
-            await _db.Agendamentos.FirstOrDefaultAsync(a => a.Id == id, ct),
+            await SomenteVisiveis(_db.Agendamentos).FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
 
         if (req.Status == StatusAgendamento.Cancelado &&
@@ -342,7 +352,7 @@ public class AgendamentosController : ControllerBaseApi
         long id, [FromQuery] string? motivo, CancellationToken ct)
     {
         var agendamento = NaoNulo(
-            await _db.Agendamentos.FirstOrDefaultAsync(a => a.Id == id, ct),
+            await SomenteVisiveis(_db.Agendamentos).FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
 
         if (agendamento.Status == StatusAgendamento.Concluido)
@@ -405,7 +415,7 @@ public class AgendamentosController : ControllerBaseApi
         long id, long itemId, TrocarResponsavelRequest req, CancellationToken ct)
     {
         var agendamento = NaoNulo(
-            await _db.Agendamentos.Include(a => a.Itens).FirstOrDefaultAsync(a => a.Id == id, ct),
+            await SomenteVisiveis(_db.Agendamentos).Include(a => a.Itens).FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
 
         if (agendamento.Status is StatusAgendamento.Cancelado)
@@ -506,8 +516,13 @@ public class AgendamentosController : ControllerBaseApi
         }
     }
 
+    /// <summary>
+    /// Null quando não existe ou quando esta pessoa não pode vê-lo — de propósito: as
+    /// duas viram o mesmo "não encontrado", e responder "existe, mas não é seu" contaria
+    /// que o cliente tem hora marcada.
+    /// </summary>
     private Task<Agendamento?> CarregarAsync(long id, CancellationToken ct) =>
-        _db.Agendamentos
+        SomenteVisiveis(_db.Agendamentos)
             .Include(a => a.Cliente)
             .Include(a => a.Responsavel)
             // Cada item traz quem o presta: é o nome que a tela mostra ao lado do serviço.

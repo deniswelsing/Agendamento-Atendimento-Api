@@ -29,8 +29,12 @@ public class DashboardController : ControllerBaseApi
         var inicioMes = new DateTimeOffset(
             new DateOnly(dia.Year, dia.Month, 1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
 
-        var agendamentosDoDia = await _db.Agendamentos
-            .AsNoTracking()
+        // Os contadores seguem a mesma regra da agenda: quem só enxerga os próprios
+        // atendimentos não pode ler pelo painel quantos a empresa tem hoje.
+        var vejoTudo = VisibilidadeDaAgenda.VeTudo(PermissoesDoUsuario);
+
+        var agendamentosDoDia = await VisibilidadeDaAgenda
+            .Aplicar(_db.Agendamentos.AsNoTracking(), PermissoesDoUsuario, UsuarioId)
             .Where(a => a.Inicio < fimDia && a.Fim > inicioDia && a.Status != StatusAgendamento.Cancelado)
             .Select(a => a.Status)
             .ToListAsync(ct);
@@ -50,6 +54,8 @@ public class DashboardController : ControllerBaseApi
 
         return Ok(new ResumoDashboardDto(
             Data: dia,
+            // A tela precisa saber de quem são os números que está mostrando.
+            AgendaDeTodoOTime: vejoTudo,
             AgendamentosHoje: agendamentosDoDia.Count,
             AgendamentosConfirmados: agendamentosDoDia.Count(s => s == StatusAgendamento.Confirmado),
             AtendimentosConcluidos: agendamentosDoDia.Count(s => s == StatusAgendamento.Concluido),

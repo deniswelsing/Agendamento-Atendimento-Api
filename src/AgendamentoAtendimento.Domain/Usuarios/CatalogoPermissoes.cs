@@ -46,7 +46,11 @@ public static class Permissoes
         new("dashboard", "Painel", "dashboard", new[] { Ver }),
         new("agenda", "Agenda", "agenda", new[]
         {
-            Ver, Criar, Editar,
+            Ver,
+            // Sem esta, a pessoa vê só o que ela mesma presta. É a diferença entre a
+            // recepção, que precisa da agenda inteira, e quem atende, que precisa da sua.
+            new AcaoPermissao("ver-todos", "Ver a agenda de todo o time"),
+            Criar, Editar,
             new AcaoPermissao("concluir", "Iniciar e concluir atendimento"),
             new AcaoPermissao("cancelar", "Cancelar agendamento", Destrutiva: true),
         }),

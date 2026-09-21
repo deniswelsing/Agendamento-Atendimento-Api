@@ -432,7 +432,13 @@ public sealed record AlterarAssentosRequest(int Assentos);
 
 // -------------------------------------------------------------------- dashboard
 public sealed record ResumoDashboardDto(
-    DateOnly Data, int AgendamentosHoje, int AgendamentosConfirmados, int AtendimentosConcluidos,
+    DateOnly Data,
+    /// <summary>
+    /// Falso quando os contadores de agendamento são só os desta pessoa. A tela precisa
+    /// dizer isso: "3 atendimentos hoje" sem dizer de quem é um número enganoso.
+    /// </summary>
+    bool AgendaDeTodoOTime,
+    int AgendamentosHoje, int AgendamentosConfirmados, int AtendimentosConcluidos,
     int ClientesAtivos, int ClientesEmpresa, decimal FaturamentoHoje, decimal FaturamentoMes,
     decimal TicketMedio, int VendasEmAberto, string Moeda);
 
