@@ -118,16 +118,34 @@ public static class DadosIniciais
             };
             admin.Permissoes.Add(new PerfilPermissao { Permissao = Permissoes.Coringa });
 
-            var atendimento = new Perfil { Nome = "Atendimento", DeSistema = true, Descricao = "Agenda e clientes" };
+            // A recepção: vê a agenda do time inteiro e fecha a venda do atendimento. O
+            // `agenda.ver-todos` precisa estar aqui porque a migração que o criou só
+            // alcança quem já existia — sem ele, um tenant novo nasceria com a agenda
+            // estreita e um antigo com a agenda larga, sob o mesmo nome de perfil.
+            var atendimento = new Perfil
+            {
+                Nome = "Atendimento", DeSistema = true,
+                Descricao = "Agenda do time, clientes e fechamento da venda",
+            };
             AtribuirPermissoes(atendimento, new[]
             {
                 "dashboard.ver",
-                "agenda.ver", "agenda.criar", "agenda.editar", "agenda.concluir",
+                "agenda.ver", "agenda.ver-todos", "agenda.criar", "agenda.editar", "agenda.concluir",
                 "clientes.ver", "clientes.criar", "clientes.editar",
                 "catalogo.ver",
-                "vendas.ver", "vendas.criar",
+                "vendas.ver", "vendas.criar", "vendas.editar", "vendas.finalizar",
                 "horarios.ver",
             });
+
+            // Quem atende e só isso: a própria agenda, e mover o atendimento de
+            // "agendado" a "concluído". Sem `agenda.ver-todos` não vê o que não presta,
+            // e sem `vendas.finalizar` a venda fica aberta para outra pessoa fechar.
+            var soOSeu = new Perfil
+            {
+                Nome = "Atendimento (só o seu)", DeSistema = true,
+                Descricao = "Vê só o que atende; inicia e conclui, sem fechar venda",
+            };
+            AtribuirPermissoes(soOSeu, new[] { "agenda.ver", "agenda.concluir" });
 
             var financeiro = new Perfil { Nome = "Financeiro", DeSistema = true, Descricao = "Vendas e recebimentos" };
             AtribuirPermissoes(financeiro, new[]
@@ -138,7 +156,7 @@ public static class DadosIniciais
                 "financeiro.ver", "financeiro.receber", "financeiro.estornar", "financeiro.formas",
             });
 
-            db.Perfis.AddRange(admin, atendimento, financeiro);
+            db.Perfis.AddRange(admin, atendimento, soOSeu, financeiro);
             await db.SaveChangesAsync(ct);
 
             var usuarios = new List<Usuario>
