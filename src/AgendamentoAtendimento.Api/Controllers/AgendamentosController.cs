@@ -194,6 +194,8 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] long? responsavelId,
         [FromQuery] long?[]? responsaveisPorItem,
         [FromQuery] int[]? etapasPorItem,
+        [FromQuery] TimeOnly? horaDe,
+        [FromQuery] TimeOnly? horaAte,
         CancellationToken ct = default)
     {
         var itens = itensIds ?? Array.Empty<long>();
@@ -202,22 +204,26 @@ public class AgendamentosController : ControllerBaseApi
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
         var dia = await _disponibilidade.ObterDiaAsync(
-            data, duracao, responsavelId, ct, itens, null, escolhas, etapas);
+            data, duracao, responsavelId, ct, itens, null, escolhas, etapas, horaDe, horaAte);
 
-        // Dia sem encaixe não é beco sem saída: o servidor já diz onde há o próximo.
-        // Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem sabe
-        // quem presta o quê.
+        // Dia sem encaixe não é beco sem saída: o servidor já manda os dias próximos que
+        // têm. Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem
+        // sabe quem presta o quê.
         if (dia.Livres.Count == 0 && itens.Length > 0)
         {
-            var proxima = await _disponibilidade.ProximaOportunidadeAsync(
+            var sugestoes = await _disponibilidade.SugestoesAsync(
                 data.AddDays(1), itens, responsavelId, ct: ct,
-                responsaveisPorItem: escolhas, etapasPorItem: etapas);
+                responsaveisPorItem: escolhas, etapasPorItem: etapas,
+                horaDe: horaDe, horaAte: horaAte);
 
-            if (proxima is { } achado)
+            if (sugestoes.Count > 0)
             {
                 return Ok(dia.ParaDto() with
                 {
-                    Proxima = new ProximaOportunidadeDto(achado.Data, achado.Slot.ParaDto()),
+                    Sugestoes = sugestoes
+                        .Select(s => new SugestaoDeDiaDto(
+                            s.Data, s.Slots.Select(slot => slot.ParaDto()).ToList()))
+                        .ToList(),
                 });
             }
         }
@@ -237,6 +243,8 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] long? responsavelId,
         [FromQuery] long?[]? responsaveisPorItem,
         [FromQuery] int[]? etapasPorItem,
+        [FromQuery] TimeOnly? horaDe,
+        [FromQuery] TimeOnly? horaAte,
         CancellationToken ct = default)
     {
         if (ate.DayNumber - de.DayNumber > 62)
@@ -250,7 +258,8 @@ public class AgendamentosController : ControllerBaseApi
         // com quem não presta o serviço, e o dia — que já filtra — mostraria menos.
         var dias = await _disponibilidade.ObterPeriodoAsync(
             de, ate, duracao, responsavelId, ct, itens,
-            Escolhas(itens, responsaveisPorItem), Etapas(itens, etapasPorItem));
+            Escolhas(itens, responsaveisPorItem), Etapas(itens, etapasPorItem),
+            horaDe, horaAte);
         return Ok(dias.Select(d => d.ParaDto()).ToList());
     }
 

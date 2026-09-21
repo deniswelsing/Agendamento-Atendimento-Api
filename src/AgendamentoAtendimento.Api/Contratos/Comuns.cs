@@ -182,8 +182,14 @@ public sealed record SlotDto(
     /// <summary>Um por serviço, na ordem em que foram pedidos.</summary>
     IReadOnlyList<AtribuicaoDto> Atribuicoes);
 
-/// <summary>O próximo dia com encaixe, quando o pedido não cabe no dia perguntado.</summary>
-public sealed record ProximaOportunidadeDto(DateOnly Data, SlotDto Slot);
+/// <summary>
+/// Um dia próximo que tem encaixe, com os primeiros horários dele.
+///
+/// Vem em lista: apontar só o próximo dia obriga a tela a perguntar de novo para mostrar
+/// o seguinte, e quem está com o cliente no telefone precisa de duas ou três opções na
+/// mesma resposta.
+/// </summary>
+public sealed record SugestaoDeDiaDto(DateOnly Data, IReadOnlyList<SlotDto> Slots);
 
 public sealed record DiaDaAgendaDto(
     DateOnly Data, bool Aberto, TimeOnly? Abertura, TimeOnly? Fechamento,
@@ -191,8 +197,11 @@ public sealed record DiaDaAgendaDto(
     int IntervaloSlotMinutos, int TotalAgendamentos, IReadOnlyList<SlotDto> Livres,
     /// <summary>Por que o dia não tem encaixe, quando a empresa está aberta.</summary>
     string? MotivoSemEncaixe = null,
-    /// <summary>O primeiro dia à frente que tem encaixe, quando este não tem.</summary>
-    ProximaOportunidadeDto? Proxima = null);
+    /// <summary>
+    /// Dias próximos com encaixe, quando este não tem nenhum. Já respeitam tudo o que foi
+    /// pedido — serviços, quem presta, etapas e a faixa de horário.
+    /// </summary>
+    IReadOnlyList<SugestaoDeDiaDto>? Sugestoes = null);
 
 // ------------------------------------------------------------------------ vendas
 public sealed record ComissaoPorVendedorDto(long VendedorId, string VendedorNome, decimal Valor);

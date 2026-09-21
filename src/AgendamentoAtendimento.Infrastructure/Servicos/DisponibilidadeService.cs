@@ -173,6 +173,12 @@ public class DisponibilidadeService
     /// contagem do dia, o motivo de não ter encaixe e o "próximo dia com vaga" saírem de
     /// uma conta diferente da que a tela mostra.
     /// </param>
+    /// <param name="horaDe">
+    /// A faixa de horário pedida. O atendimento INTEIRO tem de caber nela: quem pede
+    /// "entre 14h e 18h" não quer um encaixe que termina 19h45. Fora da faixa o dia
+    /// responde como dia sem encaixe, com o motivo dizendo qual era a faixa.
+    /// </param>
+    /// <param name="horaAte">O fim da faixa. Veja <paramref name="horaDe"/>.</param>
     /// <param name="etapasPorItem">
     /// A etapa de cada serviço, na ordem de <paramref name="itensIds"/>. Serviços na mesma
     /// etapa acontecem AO MESMO TEMPO, cada um com a sua pessoa; etapas diferentes são um
@@ -188,7 +194,9 @@ public class DisponibilidadeService
         // Agendamento a desconsiderar — é o que faz reagendar não esbarrar em si mesmo.
         long? ignorarAgendamentoId = null,
         IReadOnlyList<long?>? responsaveisPorItem = null,
-        IReadOnlyList<int>? etapasPorItem = null)
+        IReadOnlyList<int>? etapasPorItem = null,
+        TimeOnly? horaDe = null,
+        TimeOnly? horaAte = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -412,7 +420,16 @@ public class DisponibilidadeService
                 atribuicoes));
         }
 
-        var ordenados = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
+        var todosDoDia = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
+
+        // A faixa corta no fim, e não na montagem da cadeia: é o mesmo dia, visto por
+        // uma janela menor — e é o que deixa dizer "havia horário, mas não nessa faixa".
+        var ordenados = todosDoDia
+            .Where(s => horaDe is not { } de || TimeOnly.FromDateTime(s.Inicio.UtcDateTime) >= de)
+            .Where(s => horaAte is not { } ate || TimeOnly.FromDateTime(s.Fim.UtcDateTime) <= ate)
+            .ToList();
+
+        var soAFaixaCortou = ordenados.Count == 0 && todosDoDia.Count > 0;
 
         var todosNoTeto = politica.LimitePorPessoa > 0 && atendentes.Count > 0
             && atendentes.All(a =>
@@ -420,7 +437,11 @@ public class DisponibilidadeService
 
         var motivo = ordenados.Count > 0
             ? null
-            : escolhaImpossivel is not null
+            // Dizer "ninguém está livre" quando havia horário fora da faixa mandaria
+            // procurar outro dia quando bastava abrir a faixa.
+            : soAFaixaCortou
+                ? $"Há horário neste dia, mas não entre {Faixa(horaDe, horaAte)}."
+                : escolhaImpossivel is not null
                 ? escolhaImpossivel
                 : habilitados.Any(h => h.Count == 0)
                 ? "Ninguém do time presta esse serviço."
@@ -542,6 +563,15 @@ public class DisponibilidadeService
 
         return porPosicao.Select(a => a!).ToList();
     }
+
+    /// <summary>A faixa como a mensagem a escreve. Só um lado dela também é faixa.</summary>
+    private static string Faixa(TimeOnly? de, TimeOnly? ate) => (de, ate) switch
+    {
+        ({ } d, { } a) => $@"{d:HH\:mm} e {a:HH\:mm}",
+        ({ } d, null) => $@"{d:HH\:mm} e o fechamento",
+        (null, { } a) => $@"a abertura e {a:HH\:mm}",
+        _ => "essa faixa",
+    };
 
     /// <summary>
     /// Quanto o atendimento inteiro dura: a soma das etapas, e cada etapa vale o serviço
@@ -748,32 +778,46 @@ public class DisponibilidadeService
     }
 
     /// <summary>
-    /// O primeiro dia com encaixe a partir de <paramref name="de"/>. É o que a tela usa
-    /// para dizer "aqui não, mas na quinta" em vez de mostrar um vazio sem saída.
+    /// Os próximos dias que têm encaixe, a partir de <paramref name="de"/>, já com os
+    /// primeiros horários de cada um.
+    ///
+    /// Um dia sem encaixe não pode ser um beco sem saída, e apontar só o próximo dia
+    /// obriga a tela a perguntar de novo para mostrar o seguinte. Alguns dias com alguns
+    /// horários cada é o que deixa escolher sem sair da tela.
+    ///
+    /// As escolhas e a faixa de horário viajam junto: uma sugestão que as ignorasse
+    /// mandaria para um dia que a tela mostraria vazio.
     /// </summary>
-    public async Task<(DateOnly Data, SlotDisponivel Slot)?> ProximaOportunidadeAsync(
-        DateOnly de,
-        IReadOnlyCollection<long> itensIds,
-        long? responsavelId = null,
-        int limiteDias = 30,
-        CancellationToken ct = default,
-        // As escolhas viajam junto: um "próximo dia com vaga" que ignorasse quem foi
-        // escolhido mandaria a tela para um dia que ela mesma mostraria vazio.
-        IReadOnlyList<long?>? responsaveisPorItem = null,
-        IReadOnlyList<int>? etapasPorItem = null)
+    public async Task<IReadOnlyList<(DateOnly Data, IReadOnlyList<SlotDisponivel> Slots)>>
+        SugestoesAsync(
+            DateOnly de,
+            IReadOnlyCollection<long> itensIds,
+            long? responsavelId = null,
+            int limiteDias = 30,
+            CancellationToken ct = default,
+            IReadOnlyList<long?>? responsaveisPorItem = null,
+            IReadOnlyList<int>? etapasPorItem = null,
+            TimeOnly? horaDe = null,
+            TimeOnly? horaAte = null,
+            int diasSugeridos = 3,
+            int slotsPorDia = 3)
     {
-        for (var i = 0; i <= limiteDias; i++)
+        var sugestoes = new List<(DateOnly, IReadOnlyList<SlotDisponivel>)>();
+
+        for (var i = 0; i <= limiteDias && sugestoes.Count < diasSugeridos; i++)
         {
             var data = de.AddDays(i);
             var dia = await ObterDiaAsync(
-                data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem, etapasPorItem);
+                data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem, etapasPorItem,
+                horaDe, horaAte);
+
             if (dia.Livres.Count > 0)
             {
-                return (data, dia.Livres[0]);
+                sugestoes.Add((data, dia.Livres.Take(slotsPorDia).ToList()));
             }
         }
 
-        return null;
+        return sugestoes;
     }
 
     /// <summary>Resumo por dia usado pelas visões de semana e de mês.</summary>
@@ -785,7 +829,9 @@ public class DisponibilidadeService
         CancellationToken ct = default,
         IReadOnlyCollection<long>? itensIds = null,
         IReadOnlyList<long?>? responsaveisPorItem = null,
-        IReadOnlyList<int>? etapasPorItem = null)
+        IReadOnlyList<int>? etapasPorItem = null,
+        TimeOnly? horaDe = null,
+        TimeOnly? horaAte = null)
     {
         if (ate < de)
         {
@@ -799,7 +845,7 @@ public class DisponibilidadeService
             // prometeria encaixe em dias que a tela abriria vazios.
             dias.Add(await ObterDiaAsync(
                 data, duracaoMinutos, responsavelId, ct, itensIds, null,
-                responsaveisPorItem, etapasPorItem));
+                responsaveisPorItem, etapasPorItem, horaDe, horaAte));
         }
         return dias;
     }

@@ -221,6 +221,17 @@ Devolve, por dia: se a empresa abre, a janela, a pausa, o motivo de estar fechad
 intervalo de encaixe, quantos atendimentos já existem e a lista de horários livres **com a
 pessoa do time que atende cada um**.
 
+`horaDe` e `horaAte` são a faixa que o cliente pediu, e o atendimento **inteiro** tem de
+caber nela: quem pede "entre 14h e 18h" não quer um encaixe que termina 19h45. Um lado só
+também vale. Quando a faixa é o que esvaziou o dia, o motivo diz isso — culpar a agenda
+mandaria procurar outro dia quando bastava abrir a faixa.
+
+Dia sem encaixe devolve `sugestoes`: os próximos dias que têm, com os primeiros horários
+de cada um. É lista, e não um "próximo dia" solto, porque quem está com o cliente no
+telefone precisa de duas ou três opções na mesma resposta — e apontar um dia só obriga a
+tela a perguntar de novo para mostrar o seguinte. As sugestões respeitam tudo o que foi
+pedido: serviços, quem presta, etapas e a faixa.
+
 O cálculo é a interseção da janela da empresa com a jornada de cada atendente, menos as
 pausas dos dois, menos as ausências, menos o que já está agendado — e só entre quem presta
 o serviço pedido. `POST /api/agendamentos` revalida isso antes de gravar: uma agenda
