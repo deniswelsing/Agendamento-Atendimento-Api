@@ -132,6 +132,32 @@ public class ItemCatalogoConfig : IEntityTypeConfiguration<ItemCatalogo>
     }
 }
 
+public class EntradaListaDeEsperaConfig : IEntityTypeConfiguration<EntradaListaDeEspera>
+{
+    public void Configure(EntityTypeBuilder<EntradaListaDeEspera> b)
+    {
+        b.Property(e => e.Status).HasConversion<int>().IsRequired();
+        b.Property(e => e.Observacao).HasMaxLength(500);
+        b.Ignore(e => e.NaFila);
+        b.HasOne(e => e.Cliente).WithMany().HasForeignKey(e => e.ClienteId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasOne(e => e.ItemCatalogo).WithMany().HasForeignKey(e => e.ItemCatalogoId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasOne(e => e.Responsavel).WithMany().HasForeignKey(e => e.ResponsavelId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // O agendamento pode ser cancelado e apagado sem levar a espera junto: ela é o
+        // registro de que alguém quis, e isso continua verdade.
+        b.HasOne(e => e.Agendamento).WithMany().HasForeignKey(e => e.AgendamentoId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // A varredura da fila quando abre vaga: serviço + data, entre quem ainda espera.
+        b.HasIndex(e => new { e.TenantId, e.Status, e.ItemCatalogoId, e.DataDesejada });
+        // Duas esperas iguais da mesma pessoa seriam dois lugares na fila para um cliente.
+        b.HasIndex(e => new { e.TenantId, e.ClienteId, e.ItemCatalogoId, e.DataDesejada })
+            .IsUnique()
+            .HasFilter("excluido = false AND status IN (1, 2)");
+    }
+}
+
 public class TurnoConfig : IEntityTypeConfiguration<Turno>
 {
     public void Configure(EntityTypeBuilder<Turno> b)

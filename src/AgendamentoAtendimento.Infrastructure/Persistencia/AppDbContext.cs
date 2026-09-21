@@ -36,6 +36,7 @@ public class AppDbContext : DbContext
     public DbSet<ConfiguracaoPaginaPublica> PaginasPublicas => Set<ConfiguracaoPaginaPublica>();
     public DbSet<Agendamento> Agendamentos => Set<Agendamento>();
     public DbSet<Turno> Turnos => Set<Turno>();
+    public DbSet<EntradaListaDeEspera> ListaDeEspera => Set<EntradaListaDeEspera>();
     public DbSet<ConfiguracaoDeLembrete> ConfiguracoesDeLembrete => Set<ConfiguracaoDeLembrete>();
     public DbSet<LembreteDeAgendamento> Lembretes => Set<LembreteDeAgendamento>();
     public DbSet<AgendamentoItem> AgendamentoItens => Set<AgendamentoItem>();

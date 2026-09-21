@@ -20,13 +20,18 @@ public class AgendamentosController : ControllerBaseApi
     private readonly AppDbContext _db;
     private readonly DisponibilidadeService _disponibilidade;
     private readonly LembreteService _lembretes;
+    private readonly ListaDeEsperaService _fila;
 
     public AgendamentosController(
-        AppDbContext db, DisponibilidadeService disponibilidade, LembreteService lembretes)
+        AppDbContext db,
+        DisponibilidadeService disponibilidade,
+        LembreteService lembretes,
+        ListaDeEsperaService fila)
     {
         _db = db;
         _disponibilidade = disponibilidade;
         _lembretes = lembretes;
+        _fila = fila;
     }
 
     [HttpGet]
@@ -348,7 +353,7 @@ public class AgendamentosController : ControllerBaseApi
 
     [HttpDelete("{id:long}")]
     [RequerPermissao("agenda.cancelar")]
-    public async Task<IActionResult> Cancelar(
+    public async Task<ActionResult<OportunidadeDto>> Cancelar(
         long id, [FromQuery] string? motivo, CancellationToken ct)
     {
         var agendamento = NaoNulo(
@@ -367,7 +372,21 @@ public class AgendamentosController : ControllerBaseApi
 
         // Lembrar de um atendimento cancelado é pior que não lembrar de nada.
         await _lembretes.CancelarPendentesAsync(id, ct);
-        return NoContent();
+
+        // Cancelar abre vaga, e quem estava na fila por ela precisa aparecer AGORA —
+        // não numa tela que alguém talvez abra depois. O 204 vira 200 com a lista.
+        var comItens = await _db.Agendamentos.AsNoTracking()
+            .Include(a => a.Itens)
+            .FirstAsync(a => a.Id == id, ct);
+
+        // Sempre o mesmo formato, mesmo com a fila vazia: um DELETE que ora devolve 204
+        // e ora 200 com corpo obriga quem chama a tratar dois casos para ler uma lista.
+        var esperando = await _fila.QuemEsperavaPorAsync(comItens, ct);
+
+        return Ok(new OportunidadeDto(
+            DateOnly.FromDateTime(comItens.Inicio.UtcDateTime),
+            comItens.Id,
+            esperando.Select(EsperaResumida).ToList()));
     }
 
     private static bool TransicaoValida(StatusAgendamento de, StatusAgendamento para) => de switch
@@ -521,6 +540,19 @@ public class AgendamentosController : ControllerBaseApi
     /// duas viram o mesmo "não encontrado", e responder "existe, mas não é seu" contaria
     /// que o cliente tem hora marcada.
     /// </summary>
+    /// <summary>
+    /// A espera, com o que a tela precisa para oferecer a vaga. Não carrega o mundo: o
+    /// nome do cliente e o do serviço já vêm das entidades incluídas.
+    /// </summary>
+    private static EsperaDto EsperaResumida(EntradaListaDeEspera e) => new(
+        e.Id, e.ClienteId, e.Cliente?.NomeExibicao ?? "—",
+        e.ItemCatalogoId, e.ItemCatalogo?.Nome ?? "—",
+        e.DataDesejada, e.ResponsavelId, e.Responsavel?.Nome,
+        e.Status, e.Status == StatusNaEspera.Avisado ? "Avisado" : "Na fila",
+        e.CriadoEm, e.AvisadoEm, e.AgendamentoId, e.Observacao,
+        (e.ItemCatalogo?.Nome ?? "—") + " · "
+        + (e.DataDesejada is { } d ? d.ToString("dd/MM") : "qualquer dia"));
+
     private Task<Agendamento?> CarregarAsync(long id, CancellationToken ct) =>
         SomenteVisiveis(_db.Agendamentos)
             .Include(a => a.Cliente)

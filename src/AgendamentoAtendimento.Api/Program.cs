@@ -34,6 +34,7 @@ builder.Services.AddScoped<VendaService>();
 builder.Services.AddScoped<CobrancaService>();
 builder.Services.AddScoped<PaginaPublicaService>();
 builder.Services.AddScoped<LembreteService>();
+builder.Services.AddScoped<ListaDeEsperaService>();
 // O canal real (SMTP, provedor) é escolha de quem hospeda. Sem um configurado, o aviso
 // vai para o log — e a fila diz isso, em vez de a tela garantir um e-mail que não saiu.
 builder.Services.AddScoped<IEnviadorDeLembrete, EnviadorDeLembreteEmLog>();

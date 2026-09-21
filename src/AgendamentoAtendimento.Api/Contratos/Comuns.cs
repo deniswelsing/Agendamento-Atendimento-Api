@@ -279,6 +279,24 @@ public sealed record ExecutoresDoServicoDto(
 
 public sealed record DefinirExecutoresRequest(IReadOnlyList<long> UsuariosIds);
 
+// --------------------------------------------------------------- lista de espera
+public sealed record EsperaDto(
+    long EsperaId, long ClienteId, string ClienteNome, long ItemCatalogoId, string ServicoNome,
+    DateOnly? DataDesejada, long? ResponsavelId, string? ResponsavelNome,
+    StatusNaEspera Status, string StatusRotulo,
+    DateTimeOffset CriadoEm, DateTimeOffset? AvisadoEm, long? AgendamentoId,
+    string? Observacao,
+    /// <summary>`Corte · qualquer dia` ou `Corte · 28/09 com Bruna`, pronto para a tela.</summary>
+    string Resumo);
+
+public sealed record NovaEsperaRequest(
+    long ClienteId, long ItemCatalogoId, DateOnly? DataDesejada = null,
+    long? ResponsavelId = null, string? Observacao = null);
+
+/// <summary>Quem a fila devolveu quando uma vaga abriu.</summary>
+public sealed record OportunidadeDto(
+    DateOnly Data, long AgendamentoLiberadoId, IReadOnlyList<EsperaDto> Esperando);
+
 // ---------------------------------------------------------- lembretes e confirmação
 public sealed record ConfiguracaoDeLembreteDto(
     bool Ativo,
