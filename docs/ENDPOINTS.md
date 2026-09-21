@@ -226,6 +226,9 @@ caber nela: quem pede "entre 14h e 18h" não quer um encaixe que termina 19h45. 
 também vale. Quando a faixa é o que esvaziou o dia, o motivo diz isso — culpar a agenda
 mandaria procurar outro dia quando bastava abrir a faixa.
 
+`incluirSugestoes=true` traz os dias próximos mesmo quando este dia tem horário: é o
+botão "ver outros dias". O dia ter encaixe não quer dizer que o encaixe sirva ao cliente.
+
 Dia sem encaixe devolve `sugestoes`: os próximos dias que têm, com os primeiros horários
 de cada um. É lista, e não um "próximo dia" solto, porque quem está com o cliente no
 telefone precisa de duas ou três opções na mesma resposta — e apontar um dia só obriga a

@@ -196,6 +196,11 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] int[]? etapasPorItem,
         [FromQuery] TimeOnly? horaDe,
         [FromQuery] TimeOnly? horaAte,
+        /// <summary>
+        /// Traz os dias próximos mesmo quando este dia tem horário. É o botão "ver outros
+        /// dias": o dia ter encaixe não quer dizer que o encaixe sirva ao cliente.
+        /// </summary>
+        [FromQuery] bool incluirSugestoes = false,
         CancellationToken ct = default)
     {
         var itens = itensIds ?? Array.Empty<long>();
@@ -209,7 +214,7 @@ public class AgendamentosController : ControllerBaseApi
         // Dia sem encaixe não é beco sem saída: o servidor já manda os dias próximos que
         // têm. Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem
         // sabe quem presta o quê.
-        if (dia.Livres.Count == 0 && itens.Length > 0)
+        if ((dia.Livres.Count == 0 || incluirSugestoes) && itens.Length > 0)
         {
             var sugestoes = await _disponibilidade.SugestoesAsync(
                 data.AddDays(1), itens, responsavelId, ct: ct,

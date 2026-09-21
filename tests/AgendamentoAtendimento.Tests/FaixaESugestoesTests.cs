@@ -174,6 +174,17 @@ public class FaixaESugestoesTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task As_sugestoes_comecam_no_dia_seguinte_ao_pedido()
+    {
+        // É o "ver outros dias": o cliente viu os horários deste e não quis nenhum, então
+        // repetir este dia na lista não ajudaria ninguém.
+        var sugestoes = await _servico.SugestoesAsync(Segunda.AddDays(1), Servicos);
+
+        Assert.NotEmpty(sugestoes);
+        Assert.All(sugestoes, s => Assert.True(s.Data > Segunda));
+    }
+
+    [Fact]
     public async Task Sem_nenhum_dia_com_encaixe_a_lista_volta_vazia()
     {
         var ana = await _db.Usuarios.FirstAsync(u => u.Id == AnaId);
