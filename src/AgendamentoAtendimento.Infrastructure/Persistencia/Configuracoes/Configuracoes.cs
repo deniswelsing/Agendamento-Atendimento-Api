@@ -132,6 +132,37 @@ public class ItemCatalogoConfig : IEntityTypeConfiguration<ItemCatalogo>
     }
 }
 
+public class ConfiguracaoDeLembreteConfig : IEntityTypeConfiguration<ConfiguracaoDeLembrete>
+{
+    public void Configure(EntityTypeBuilder<ConfiguracaoDeLembrete> b)
+    {
+        b.Property(c => c.Canal).HasConversion<int>().IsRequired();
+        // Uma configuração por empresa: duas dariam duas respostas para a mesma pergunta.
+        b.HasIndex(c => c.TenantId).IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
+public class LembreteDeAgendamentoConfig : IEntityTypeConfiguration<LembreteDeAgendamento>
+{
+    public void Configure(EntityTypeBuilder<LembreteDeAgendamento> b)
+    {
+        b.Property(l => l.Tipo).HasConversion<int>().IsRequired();
+        b.Property(l => l.Canal).HasConversion<int>().IsRequired();
+        b.Property(l => l.Status).HasConversion<int>().IsRequired();
+        b.Property(l => l.Destino).HasMaxLength(200).IsRequired();
+        b.Property(l => l.Erro).HasMaxLength(500);
+        b.HasOne(l => l.Agendamento).WithMany().HasForeignKey(l => l.AgendamentoId)
+            .OnDelete(DeleteBehavior.Cascade);
+        // A varredura da fila: o que está pendente e já venceu.
+        b.HasIndex(l => new { l.TenantId, l.Status, l.QuandoEnviar });
+        // Um aviso de cada tipo por agendamento — é o que impede mandar dois lembretes
+        // do mesmo atendimento quando ele é remarcado duas vezes.
+        b.HasIndex(l => new { l.AgendamentoId, l.Tipo })
+            .IsUnique()
+            .HasFilter("excluido = false AND status = 1");
+    }
+}
+
 public class AgendamentoConfig : IEntityTypeConfiguration<Agendamento>
 {
     public void Configure(EntityTypeBuilder<Agendamento> b)

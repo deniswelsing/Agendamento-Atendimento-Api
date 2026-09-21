@@ -189,6 +189,51 @@ public class PublicoController : ControllerBase
         return Ok(await ComprovanteAsync(agendamento, pagina, ct));
     }
 
+    /// <summary>
+    /// O cliente confirma presença pelo código — é o que o link do lembrete abre. Sem
+    /// isso, o lembrete só informa, e a agenda continua sem saber quem vem.
+    /// </summary>
+    [HttpPost("agendamentos/{codigo}/confirmar")]
+    public async Task<ActionResult<AgendamentoPublicoDto>> Confirmar(
+        string slug, string codigo, CancellationToken ct)
+    {
+        var pagina = await _paginas.AssumirPorSlugAsync(slug, ct);
+        if (pagina is null)
+        {
+            return PaginaInexistente();
+        }
+
+        var agendamento = await _paginas.PorCodigoAsync(codigo, ct);
+        if (agendamento is null)
+        {
+            return NotFound(new ErroApi("Código não encontrado.", "NAO_ENCONTRADO"));
+        }
+
+        // Cancelado ou já atendido não se confirma: confirmar presença no que já passou
+        // não diz nada a ninguém, e no que foi cancelado ressuscitaria o horário.
+        if (agendamento.Status is StatusAgendamento.Cancelado or StatusAgendamento.EmAtendimento
+            or StatusAgendamento.Concluido or StatusAgendamento.NaoCompareceu)
+        {
+            return BadRequest(new ErroApi(
+                "Este agendamento não pode mais ser confirmado por aqui. Fale com a gente.",
+                "CONFIRMACAO_INDISPONIVEL"));
+        }
+
+        // Um pedido esperando aprovação do time não vira compromisso porque o cliente
+        // clicou: quem aprova é o time. A confirmação fica registrada para quando for.
+        if (agendamento.Status == StatusAgendamento.Agendado)
+        {
+            agendamento.Status = StatusAgendamento.Confirmado;
+        }
+
+        // Confirmar duas vezes é o normal: o cliente clica no link de novo. A data da
+        // primeira é a que vale — reescrever contaria a história errada.
+        agendamento.ConfirmadoEm ??= Agora;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await ComprovanteAsync(agendamento, pagina, ct));
+    }
+
     private async Task<AgendamentoPublicoDto> ComprovanteAsync(
         Agendamento a, ConfiguracaoPaginaPublica pagina, CancellationToken ct)
     {

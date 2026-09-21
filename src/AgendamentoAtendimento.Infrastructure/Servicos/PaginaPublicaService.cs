@@ -258,7 +258,7 @@ public class PaginaPublicaService
             ResponsavelId = responsavel,
             Observacoes = observacoes,
             Origem = OrigemAgendamento.Online,
-            CodigoPublico = GerarCodigo(),
+            CodigoPublico = CodigoDeAcesso.Gerar(),
         };
 
         foreach (var servico in servicos)
@@ -347,22 +347,6 @@ public class PaginaPublicaService
         }
 
         return limpo.ToString().Trim('-');
-    }
-
-    /// <summary>
-    /// Código curto, sem caracteres que se confundem lidos em voz alta (O/0, I/1).
-    /// Sorteado por gerador criptográfico: é o que protege a consulta e o cancelamento.
-    /// </summary>
-    private static string GerarCodigo()
-    {
-        const string alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        var letras = new char[10];
-        for (var i = 0; i < letras.Length; i++)
-        {
-            letras[i] = alfabeto[RandomNumberGenerator.GetInt32(alfabeto.Length)];
-        }
-
-        return new string(letras);
     }
 
     /// <summary>Null quando algum id pedido não é um serviço público válido.</summary>

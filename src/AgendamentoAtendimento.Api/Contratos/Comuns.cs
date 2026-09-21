@@ -70,7 +70,12 @@ public sealed record AgendamentoDto(
     DateTimeOffset Inicio, DateTimeOffset Fim, StatusAgendamento Status,
     long? ResponsavelId, string? ResponsavelNome, IReadOnlyList<ItemAgendadoDto> Itens,
     string? Observacoes, string? LocalAtendimento, long? VendaId, decimal ValorEstimado,
-    OrigemAgendamento Origem);
+    OrigemAgendamento Origem,
+    /// <summary>
+    /// Quando o cliente confirmou presença. Nulo é "ainda não respondeu" — diferente de
+    /// "não vem", e diferente do status, que o time também muda.
+    /// </summary>
+    DateTimeOffset? ConfirmadoPeloCliente = null);
 
 // ------------------------------------------------------- página pública (admin)
 public sealed record PaginaPublicaDto(
@@ -264,6 +269,46 @@ public sealed record ExecutoresDoServicoDto(
     long ItemId, string Nome, IReadOnlyList<MembroTimeDto> Executores, bool AbertoATodos);
 
 public sealed record DefinirExecutoresRequest(IReadOnlyList<long> UsuariosIds);
+
+// ---------------------------------------------------------- lembretes e confirmação
+public sealed record ConfiguracaoDeLembreteDto(
+    bool Ativo,
+    int HorasDeAntecedencia,
+    bool AvisarAoMarcar,
+    bool PedirConfirmacao,
+    CanalDeLembrete Canal,
+    int ToleranciaDeAtrasoMinutos,
+    /// <summary>
+    /// Falso quando não há canal de envio configurado nesta instalação. A tela precisa
+    /// dizer isso: ligar o lembrete achando que um e-mail sai seria pior que não ligar.
+    /// </summary>
+    bool CanalConfigurado,
+    string AvisoDoCanal);
+
+public sealed record ConfiguracaoDeLembreteRequest(
+    bool Ativo,
+    int HorasDeAntecedencia = 24,
+    bool AvisarAoMarcar = true,
+    bool PedirConfirmacao = true,
+    int ToleranciaDeAtrasoMinutos = 120);
+
+public sealed record LembreteDto(
+    long LembreteId,
+    long AgendamentoId,
+    string ClienteNome,
+    TipoDeLembrete Tipo,
+    string TipoRotulo,
+    CanalDeLembrete Canal,
+    StatusDeLembrete Status,
+    string StatusRotulo,
+    DateTimeOffset QuandoEnviar,
+    DateTimeOffset? EnviadoEm,
+    DateTimeOffset InicioDoAtendimento,
+    string Destino,
+    string? Erro,
+    int Tentativas);
+
+public sealed record DespachoDto(int Enviados, int Falharam, int Expirados, string Resumo);
 
 // ---------------------------------------------------------------------- horários
 /// <summary>

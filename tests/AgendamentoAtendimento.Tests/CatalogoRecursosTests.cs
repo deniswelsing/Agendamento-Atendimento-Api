@@ -125,6 +125,7 @@ public class CatalogoRecursosTests
             CatalogoRecursos.Clientes,
             CatalogoRecursos.GerenteDeConta,
             CatalogoRecursos.JornadaPorPessoa,
+            CatalogoRecursos.LembreteEmail,
             CatalogoRecursos.MultiUsuario,
             CatalogoRecursos.Onboarding,
             CatalogoRecursos.PaginaOnline,

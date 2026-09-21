@@ -19,11 +19,14 @@ public class AgendamentosController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
     private readonly DisponibilidadeService _disponibilidade;
+    private readonly LembreteService _lembretes;
 
-    public AgendamentosController(AppDbContext db, DisponibilidadeService disponibilidade)
+    public AgendamentosController(
+        AppDbContext db, DisponibilidadeService disponibilidade, LembreteService lembretes)
     {
         _db = db;
         _disponibilidade = disponibilidade;
+        _lembretes = lembretes;
     }
 
     [HttpGet]
@@ -204,6 +207,10 @@ public class AgendamentosController : ControllerBaseApi
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
 
+        // A fila de avisos nasce junto: um agendamento sem lembrete programado é um
+        // cliente que ninguém vai avisar.
+        await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+
         var completo = await CarregarAsync(agendamento.Id, ct);
         return CreatedAtAction(nameof(Obter), new { id = agendamento.Id }, completo!.ParaDto());
     }
@@ -274,6 +281,11 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Remarcar invalida o lembrete antigo: ele aponta para uma hora que não existe
+        // mais. Morre um, nasce outro — e o cliente não recebe aviso da hora errada.
+        await _lembretes.ReprogramarAsync(id, DateTimeOffset.UtcNow, ct);
+
         var completo = await CarregarAsync(id, ct);
         return Ok(completo!.ParaDto());
     }
@@ -312,6 +324,14 @@ public class AgendamentosController : ControllerBaseApi
             ? req.Motivo : agendamento.MotivoCancelamento;
 
         await _db.SaveChangesAsync(ct);
+
+        // Atendimento que acabou — de qualquer jeito — não tem mais o que lembrar.
+        if (req.Status is StatusAgendamento.Cancelado or StatusAgendamento.Concluido
+            or StatusAgendamento.NaoCompareceu or StatusAgendamento.EmAtendimento)
+        {
+            await _lembretes.CancelarPendentesAsync(id, ct);
+        }
+
         var completo = await CarregarAsync(id, ct);
         return Ok(completo!.ParaDto());
     }
@@ -334,6 +354,9 @@ public class AgendamentosController : ControllerBaseApi
         agendamento.Status = StatusAgendamento.Cancelado;
         agendamento.MotivoCancelamento = motivo;
         await _db.SaveChangesAsync(ct);
+
+        // Lembrar de um atendimento cancelado é pior que não lembrar de nada.
+        await _lembretes.CancelarPendentesAsync(id, ct);
         return NoContent();
     }
 

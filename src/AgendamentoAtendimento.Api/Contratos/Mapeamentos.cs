@@ -85,7 +85,7 @@ public static class Mapeamentos
             j.Item.Responsavel?.Nome ?? (j.Item.ResponsavelId is null ? a.Responsavel?.Nome : null),
             j.Inicio, j.Fim)).ToList(),
         a.Observacoes, a.LocalAtendimento, a.VendaId,
-        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem);
+        a.Itens.Sum(i => i.PrecoUnitario * i.Quantidade), a.Origem, a.ConfirmadoEm);
 
     public static SlotDto ParaDto(this SlotDisponivel s) =>
         new(s.Inicio, s.Fim, s.ResponsavelId, s.ResponsavelNome,

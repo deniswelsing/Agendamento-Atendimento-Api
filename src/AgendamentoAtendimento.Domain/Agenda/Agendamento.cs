@@ -80,6 +80,13 @@ public class Agendamento : EntidadeDeTenant
     /// </summary>
     public string? CodigoPublico { get; set; }
 
+    /// <summary>
+    /// Quando o cliente confirmou presença. Nulo não quer dizer que ele não vem — quer
+    /// dizer que ninguém perguntou, ou que ele ainda não respondeu. São coisas diferentes
+    /// do status, que muda por decisão do time também.
+    /// </summary>
+    public DateTimeOffset? ConfirmadoEm { get; set; }
+
     public ICollection<AgendamentoItem> Itens { get; set; } = new List<AgendamentoItem>();
 
     public int DuracaoMinutos => (int)(Fim - Inicio).TotalMinutes;

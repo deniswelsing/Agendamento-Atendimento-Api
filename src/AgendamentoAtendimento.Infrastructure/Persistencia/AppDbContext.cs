@@ -35,6 +35,8 @@ public class AppDbContext : DbContext
     public DbSet<ExecutorDeServico> ExecutoresDeServico => Set<ExecutorDeServico>();
     public DbSet<ConfiguracaoPaginaPublica> PaginasPublicas => Set<ConfiguracaoPaginaPublica>();
     public DbSet<Agendamento> Agendamentos => Set<Agendamento>();
+    public DbSet<ConfiguracaoDeLembrete> ConfiguracoesDeLembrete => Set<ConfiguracaoDeLembrete>();
+    public DbSet<LembreteDeAgendamento> Lembretes => Set<LembreteDeAgendamento>();
     public DbSet<AgendamentoItem> AgendamentoItens => Set<AgendamentoItem>();
     public DbSet<HorarioFuncionamento> HorariosFuncionamento => Set<HorarioFuncionamento>();
     public DbSet<ExcecaoHorarioFuncionamento> ExcecoesHorarioFuncionamento => Set<ExcecaoHorarioFuncionamento>();

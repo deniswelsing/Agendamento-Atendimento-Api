@@ -71,6 +71,11 @@ public static class Permissoes
             Ver, Editar,
             new AcaoPermissao("aprovar", "Aprovar pedidos feitos pelo cliente"),
         }),
+        new("lembretes", "Lembretes e confirmação", "lembretes", new[]
+        {
+            Ver, Editar,
+            new AcaoPermissao("enviar", "Disparar a fila de avisos"),
+        }),
         new("time", "Time", "time", new[]
         {
             Ver,
