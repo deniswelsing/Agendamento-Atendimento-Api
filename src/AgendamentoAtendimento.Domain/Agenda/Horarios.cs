@@ -48,6 +48,15 @@ public class HorarioStaff : EntidadeDeTenant
     public Usuario? Usuario { get; set; }
 
     public DayOfWeek DiaDaSemana { get; set; }
+
+    /// <summary>
+    /// O turno deste dia, quando a pessoa segue escala. Nulo = horário aberto, com a
+    /// janela própria logo abaixo. Quando há turno, é dele que saem os horários — copiar
+    /// os minutos para cá deixaria a escala desatualizada no dia em que o turno mudasse.
+    /// </summary>
+    public long? TurnoId { get; set; }
+    public Turno? Turno { get; set; }
+
     public TimeOnly Inicio { get; set; }
     public TimeOnly Fim { get; set; }
 
@@ -56,6 +65,12 @@ public class HorarioStaff : EntidadeDeTenant
 
     /// <summary>Falso = folga fixa nesse dia.</summary>
     public bool Trabalha { get; set; } = true;
+
+    /// <summary>A janela que vale hoje: a do turno, quando há um; a própria, quando não.</summary>
+    public TimeOnly InicioEfetivo => Turno?.Inicio ?? Inicio;
+    public TimeOnly FimEfetivo => Turno?.Fim ?? Fim;
+    public TimeOnly? PausaInicioEfetiva => Turno is null ? PausaInicio : Turno.PausaInicio;
+    public TimeOnly? PausaFimEfetiva => Turno is null ? PausaFim : Turno.PausaFim;
 }
 
 /// <summary>Ausência pontual de um atendente (férias, atestado, compromisso).</summary>

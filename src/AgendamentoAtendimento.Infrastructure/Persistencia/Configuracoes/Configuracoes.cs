@@ -132,6 +132,19 @@ public class ItemCatalogoConfig : IEntityTypeConfiguration<ItemCatalogo>
     }
 }
 
+public class TurnoConfig : IEntityTypeConfiguration<Turno>
+{
+    public void Configure(EntityTypeBuilder<Turno> b)
+    {
+        b.Property(t => t.Nome).HasMaxLength(60).IsRequired();
+        b.Property(t => t.Cor).HasMaxLength(9);
+        b.Ignore(t => t.MinutosUteis);
+        b.Ignore(t => t.Janela);
+        // Dois turnos com o mesmo nome na mesma empresa seriam indistinguíveis na escala.
+        b.HasIndex(t => new { t.TenantId, t.Nome }).IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
 public class ConfiguracaoDeLembreteConfig : IEntityTypeConfiguration<ConfiguracaoDeLembrete>
 {
     public void Configure(EntityTypeBuilder<ConfiguracaoDeLembrete> b)
@@ -160,6 +173,20 @@ public class LembreteDeAgendamentoConfig : IEntityTypeConfiguration<LembreteDeAg
         b.HasIndex(l => new { l.AgendamentoId, l.Tipo })
             .IsUnique()
             .HasFilter("excluido = false AND status = 1");
+    }
+}
+
+public class HorarioStaffTurnoConfig : IEntityTypeConfiguration<HorarioStaff>
+{
+    public void Configure(EntityTypeBuilder<HorarioStaff> b)
+    {
+        b.Ignore(h => h.InicioEfetivo);
+        b.Ignore(h => h.FimEfetivo);
+        b.Ignore(h => h.PausaInicioEfetiva);
+        b.Ignore(h => h.PausaFimEfetiva);
+        // Apagar o turno não pode apagar a escala: a linha volta ao horário livre dela.
+        b.HasOne(h => h.Turno).WithMany().HasForeignKey(h => h.TurnoId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

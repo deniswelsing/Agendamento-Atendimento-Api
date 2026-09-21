@@ -53,6 +53,17 @@ public class HorariosController : ControllerBaseApi
         return Ok(ModoDeOcupacaoDto.De(tenant.ModoDeOcupacao));
     }
 
+    private static string NomeDoDia(DayOfWeek dia) => dia switch
+    {
+        DayOfWeek.Sunday => "aos domingos",
+        DayOfWeek.Monday => "às segundas",
+        DayOfWeek.Tuesday => "às terças",
+        DayOfWeek.Wednesday => "às quartas",
+        DayOfWeek.Thursday => "às quintas",
+        DayOfWeek.Friday => "às sextas",
+        _ => "aos sábados",
+    };
+
     private async Task<ModoDeOcupacao> ModoDaEmpresaAsync(CancellationToken ct) =>
         await _db.Tenants
             .AsNoTracking()
@@ -61,6 +72,134 @@ public class HorariosController : ControllerBaseApi
             .FirstOrDefaultAsync(ct) is var lido && Enum.IsDefined(lido)
             ? lido
             : ModoDeOcupacao.PorServico;
+
+    // ------------------------------------------------------------------- turnos
+    /// <summary>
+    /// Os turnos da escala. Existem para não redigitar o mesmo horário em cada pessoa e
+    /// cada dia — mudar o turno muda a escala inteira de quem o segue.
+    /// </summary>
+    [HttpGet("turnos")]
+    [RequerPermissao("horarios.ver")]
+    public async Task<ActionResult<IReadOnlyList<TurnoDto>>> Turnos(
+        [FromQuery] bool incluirInativos = false, CancellationToken ct = default)
+    {
+        var turnos = await _db.Turnos.AsNoTracking()
+            .Where(t => incluirInativos || t.Ativo)
+            .OrderBy(t => t.Inicio).ThenBy(t => t.Nome)
+            .ToListAsync(ct);
+
+        // Quantas linhas de escala usam cada um: é o que impede apagar sem saber o custo.
+        var emUso = await _db.HorariosStaff.AsNoTracking()
+            .Where(h => h.TurnoId != null)
+            .GroupBy(h => h.TurnoId!.Value)
+            .Select(g => new { TurnoId = g.Key, Quantas = g.Count() })
+            .ToListAsync(ct);
+
+        return Ok(turnos
+            .Select(t => t.ParaDto(emUso.FirstOrDefault(u => u.TurnoId == t.Id)?.Quantas ?? 0))
+            .ToList());
+    }
+
+    [HttpPost("turnos")]
+    [RequerPermissao("horarios.editar")]
+    public async Task<ActionResult<TurnoDto>> CriarTurno(TurnoRequest req, CancellationToken ct)
+    {
+        var turno = new Turno { Nome = string.Empty, Inicio = req.Inicio, Fim = req.Fim };
+        await AplicarAsync(turno, req, ct);
+
+        _db.Turnos.Add(turno);
+        await _db.SaveChangesAsync(ct);
+
+        return CreatedAtAction(nameof(Turnos), new { }, turno.ParaDto());
+    }
+
+    [HttpPut("turnos/{id:long}")]
+    [RequerPermissao("horarios.editar")]
+    public async Task<ActionResult<TurnoDto>> SalvarTurno(
+        long id, TurnoRequest req, CancellationToken ct)
+    {
+        var turno = NaoNulo(
+            await _db.Turnos.FirstOrDefaultAsync(t => t.Id == id, ct), "Turno não encontrado.");
+
+        await AplicarAsync(turno, req, ct, id);
+        await _db.SaveChangesAsync(ct);
+
+        var quantas = await _db.HorariosStaff.CountAsync(h => h.TurnoId == id, ct);
+        return Ok(turno.ParaDto(quantas));
+    }
+
+    /// <summary>
+    /// Turno em uso é desativado, não apagado: apagar soltaria a escala de quem o segue
+    /// para o horário antigo guardado na linha, sem ninguém pedir.
+    /// </summary>
+    [HttpDelete("turnos/{id:long}")]
+    [RequerPermissao("horarios.editar")]
+    public async Task<ActionResult<TurnoDto>> ExcluirTurno(long id, CancellationToken ct)
+    {
+        var turno = NaoNulo(
+            await _db.Turnos.FirstOrDefaultAsync(t => t.Id == id, ct), "Turno não encontrado.");
+
+        var quantas = await _db.HorariosStaff.CountAsync(h => h.TurnoId == id, ct);
+        if (quantas > 0)
+        {
+            turno.Ativo = false;
+            await _db.SaveChangesAsync(ct);
+            return Ok(turno.ParaDto(quantas));
+        }
+
+        turno.Excluido = true;
+        turno.ExcluidoEm = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    private async Task AplicarAsync(
+        Turno turno, TurnoRequest req, CancellationToken ct, long? ignorarId = null)
+    {
+        var nome = (req.Nome ?? string.Empty).Trim();
+        if (nome.Length < 2)
+        {
+            throw new RegraDeNegocioException("O turno precisa de um nome.", "NOME");
+        }
+
+        if (req.Inicio >= req.Fim)
+        {
+            throw new RegraDeNegocioException(
+                "O início do turno precisa vir antes do fim.", "JANELA_INVALIDA");
+        }
+
+        if (req.PausaInicio is { } pi && req.PausaFim is { } pf)
+        {
+            if (pi >= pf)
+            {
+                throw new RegraDeNegocioException(
+                    "O início da pausa precisa vir antes do fim.", "PAUSA_INVALIDA");
+            }
+
+            // Pausa fora do turno não pausa nada: só deixaria a tela mostrando um
+            // intervalo que a agenda ignora.
+            if (pi < req.Inicio || pf > req.Fim)
+            {
+                throw new RegraDeNegocioException(
+                    "A pausa precisa ficar dentro do turno.", "PAUSA_FORA");
+            }
+        }
+
+        var repetido = await _db.Turnos
+            .AnyAsync(t => t.Nome.ToLower() == nome.ToLower() && t.Id != (ignorarId ?? 0), ct);
+        if (repetido)
+        {
+            throw new RegraDeNegocioException("Já existe um turno com esse nome.", "NOME_REPETIDO");
+        }
+
+        turno.Nome = nome;
+        turno.Inicio = req.Inicio;
+        turno.Fim = req.Fim;
+        turno.PausaInicio = req.PausaInicio;
+        turno.PausaFim = req.PausaFim;
+        turno.Cor = string.IsNullOrWhiteSpace(req.Cor) ? null : req.Cor.Trim();
+        turno.Ativo = req.Ativo;
+    }
 
     // ------------------------------------------------------- funcionamento da empresa
     [HttpGet("funcionamento")]
@@ -182,6 +321,8 @@ public class HorariosController : ControllerBaseApi
         var horarios = await _db.HorariosStaff
             .AsNoTracking()
             .Include(h => h.Usuario)
+            // O turno vem junto: sem ele, a janela efetiva cairia no valor da linha.
+            .Include(h => h.Turno)
             .Where(h => usuarioId == null || h.UsuarioId == usuarioId)
             .OrderBy(h => h.UsuarioId).ThenBy(h => h.DiaDaSemana)
             .ToListAsync(ct);
@@ -200,12 +341,60 @@ public class HorariosController : ControllerBaseApi
             await _db.Usuarios.FirstOrDefaultAsync(u => u.Id == usuarioId, ct),
             "Usuário não encontrado.");
 
+        // O funcionamento da empresa manda: a agenda já usa a interseção das duas
+        // janelas, então salvar jornada fora dela guardaria hora que nunca vira encaixe
+        // — e a tela mostraria uma escala que a agenda não cumpre.
+        var funcionamento = await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
+        var turnos = await _db.Turnos.AsNoTracking().Where(t => t.Ativo).ToListAsync(ct);
+
         foreach (var dia in req)
         {
-            if (dia.Trabalha && dia.Inicio >= dia.Fim)
+            if (!dia.Trabalha)
+            {
+                continue;
+            }
+
+            var turno = dia.TurnoId is { } turnoId
+                ? turnos.FirstOrDefault(t => t.Id == turnoId)
+                  ?? throw new RegraDeNegocioException(
+                      "Turno não encontrado ou inativo.", "TURNO_INVALIDO")
+                : null;
+
+            // Com turno, os horários vêm dele; sem turno, da janela livre que veio no
+            // pedido. É a mesma conta que a agenda faz depois.
+            var inicio = turno?.Inicio ?? dia.Inicio;
+            var fim = turno?.Fim ?? dia.Fim;
+
+            if (inicio >= fim)
             {
                 throw new RegraDeNegocioException(
                     "O início da jornada precisa vir antes do fim.", "JANELA_INVALIDA");
+            }
+
+            var empresa = funcionamento.FirstOrDefault(h => h.DiaDaSemana == dia.DiaDaSemana);
+            var nomeDoDia = NomeDoDia(dia.DiaDaSemana);
+
+            if (empresa is null || !empresa.Aberto || empresa.Abertura is null || empresa.Fechamento is null)
+            {
+                throw new RegraDeNegocioException(
+                    $"A empresa não abre {nomeDoDia}. Abra o dia em Horários da empresa "
+                    + "antes de escalar alguém.",
+                    "EMPRESA_FECHADA");
+            }
+
+            if (inicio < empresa.Abertura || fim > empresa.Fechamento)
+            {
+                // Fora da interpolação: dentro dela o ":" abriria o formato, e o
+                // escape necessário só deixaria a mensagem mais difícil de ler.
+                var abre = empresa.Abertura.Value.ToString("HH:mm");
+                var fecha = empresa.Fechamento.Value.ToString("HH:mm");
+                // Começa a frase, então vai com maiúscula — "aos sábados a empresa..."
+                // no início de uma mensagem parece texto cortado pela metade.
+                var noDia = char.ToUpperInvariant(nomeDoDia[0]) + nomeDoDia[1..];
+                throw new RegraDeNegocioException(
+                    $"{noDia} a empresa funciona das {abre} às {fecha}. "
+                    + "A jornada precisa caber nesse intervalo.",
+                    "FORA_DO_FUNCIONAMENTO");
             }
         }
 
@@ -219,6 +408,9 @@ public class HorariosController : ControllerBaseApi
                 _db.HorariosStaff.Add(horario);
             }
 
+            // Com turno, a linha não copia os minutos: guardá-los aqui deixaria a escala
+            // desatualizada no dia em que o turno mudasse de horário.
+            horario.TurnoId = pedido.TurnoId;
             horario.Inicio = pedido.Inicio;
             horario.Fim = pedido.Fim;
             horario.PausaInicio = pedido.PausaInicio;

@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AgendamentoAtendimento.Domain\AgendamentoAtendimento.Domain.csproj" />
     <ProjectReference Include="..\..\src\AgendamentoAtendimento.Infrastructure\AgendamentoAtendimento.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\AgendamentoAtendimento.Api\AgendamentoAtendimento.Api.csproj" />
   </ItemGroup>
 
 </Project>

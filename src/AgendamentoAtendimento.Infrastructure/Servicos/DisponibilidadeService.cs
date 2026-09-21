@@ -211,13 +211,13 @@ public class DisponibilidadeService
                 return false;
             }
 
-            if (de < Maior(abertura.Value, jornada.Inicio) || ate > Menor(fechamento.Value, jornada.Fim))
+            if (de < Maior(abertura.Value, jornada.InicioEfetivo) || ate > Menor(fechamento.Value, jornada.FimEfetivo))
             {
                 return false;
             }
 
             if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
-                ColideComPausa(de, ate, jornada.PausaInicio, jornada.PausaFim))
+                ColideComPausa(de, ate, jornada.PausaInicioEfetiva, jornada.PausaFimEfetiva))
             {
                 return false;
             }
@@ -415,7 +415,7 @@ public class DisponibilidadeService
         var de = TimeOnly.FromDateTime(inicio.UtcDateTime);
         var ate = TimeOnly.FromDateTime(fim.UtcDateTime);
 
-        if (de < Maior(abertura.Value, jornada.Inicio) || ate > Menor(fechamento.Value, jornada.Fim))
+        if (de < Maior(abertura.Value, jornada.InicioEfetivo) || ate > Menor(fechamento.Value, jornada.FimEfetivo))
         {
             return false;
         }
@@ -423,7 +423,7 @@ public class DisponibilidadeService
         var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
         var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
         if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
-            ColideComPausa(de, ate, jornada.PausaInicio, jornada.PausaFim))
+            ColideComPausa(de, ate, jornada.PausaInicioEfetiva, jornada.PausaFimEfetiva))
         {
             return false;
         }
@@ -604,8 +604,15 @@ public class DisponibilidadeService
             .OrderBy(u => u.Nome)
             .ToListAsync(ct);
 
+    /// <summary>
+    /// O turno vem junto: quando a pessoa segue escala, é dele que saem os horários, e
+    /// sem carregá-lo a janela efetiva cairia no valor antigo guardado na linha.
+    /// </summary>
     private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct) =>
-        await _db.HorariosStaff.AsNoTracking().Where(h => h.DiaDaSemana == dia).ToListAsync(ct);
+        await _db.HorariosStaff.AsNoTracking()
+            .Include(h => h.Turno)
+            .Where(h => h.DiaDaSemana == dia)
+            .ToListAsync(ct);
 
     private async Task<List<ExcecaoHorarioStaff>> AusenciasAsync(DateOnly data, CancellationToken ct) =>
         await _db.ExcecoesHorarioStaff.AsNoTracking().Where(e => e.Data == data).ToListAsync(ct);

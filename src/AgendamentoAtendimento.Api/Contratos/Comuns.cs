@@ -350,13 +350,34 @@ public sealed record ExcecaoFuncionamentoRequest(
     DateOnly Data, bool Fechado = true, TimeOnly? Abertura = null, TimeOnly? Fechamento = null,
     TimeOnly? PausaInicio = null, TimeOnly? PausaFim = null, string? Motivo = null);
 
+/// <summary>Um turno nomeado da escala. `Janela` já vem pronta para a tela.</summary>
+public sealed record TurnoDto(
+    long TurnoId, string Nome, TimeOnly Inicio, TimeOnly Fim,
+    TimeOnly? PausaInicio, TimeOnly? PausaFim, string? Cor, bool Ativo,
+    int MinutosUteis, string Janela,
+    /// <summary>Quantas linhas de escala usam este turno hoje.</summary>
+    int EmUso);
+
+public sealed record TurnoRequest(
+    string Nome, TimeOnly Inicio, TimeOnly Fim,
+    TimeOnly? PausaInicio = null, TimeOnly? PausaFim = null,
+    string? Cor = null, bool Ativo = true);
+
 public sealed record HorarioStaffDto(
     long HorarioId, long UsuarioId, string UsuarioNome, DayOfWeek DiaDaSemana,
-    TimeOnly Inicio, TimeOnly Fim, TimeOnly? PausaInicio, TimeOnly? PausaFim, bool Trabalha);
+    TimeOnly Inicio, TimeOnly Fim, TimeOnly? PausaInicio, TimeOnly? PausaFim, bool Trabalha,
+    /// <summary>Nulo = horário aberto; a janela é a de `Inicio`/`Fim` desta linha.</summary>
+    long? TurnoId = null,
+    string? TurnoNome = null,
+    /// <summary>A janela que vale de verdade: a do turno, ou a própria.</summary>
+    TimeOnly InicioEfetivo = default,
+    TimeOnly FimEfetivo = default);
 
 public sealed record HorarioStaffRequest(
     long UsuarioId, DayOfWeek DiaDaSemana, TimeOnly Inicio, TimeOnly Fim,
-    TimeOnly? PausaInicio, TimeOnly? PausaFim, bool Trabalha = true);
+    TimeOnly? PausaInicio, TimeOnly? PausaFim, bool Trabalha = true,
+    /// <summary>Informe para seguir um turno; deixe nulo para horário aberto.</summary>
+    long? TurnoId = null);
 
 public sealed record AusenciaStaffDto(
     long AusenciaId, long UsuarioId, string UsuarioNome, DateOnly Data,

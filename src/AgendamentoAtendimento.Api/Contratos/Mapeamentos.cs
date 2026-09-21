@@ -151,7 +151,12 @@ public static class Mapeamentos
 
     public static HorarioStaffDto ParaDto(this HorarioStaff h) => new(
         h.Id, h.UsuarioId, h.Usuario?.Nome ?? string.Empty, h.DiaDaSemana, h.Inicio, h.Fim,
-        h.PausaInicio, h.PausaFim, h.Trabalha);
+        h.PausaInicio, h.PausaFim, h.Trabalha,
+        h.TurnoId, h.Turno?.Nome, h.InicioEfetivo, h.FimEfetivo);
+
+    public static TurnoDto ParaDto(this Turno t, int emUso = 0) => new(
+        t.Id, t.Nome, t.Inicio, t.Fim, t.PausaInicio, t.PausaFim, t.Cor, t.Ativo,
+        t.MinutosUteis, t.Janela, emUso);
 
     public static AusenciaStaffDto ParaDto(this ExcecaoHorarioStaff e) => new(
         e.Id, e.UsuarioId, e.Usuario?.Nome ?? string.Empty, e.Data, e.DiaInteiro,
