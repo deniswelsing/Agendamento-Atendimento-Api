@@ -110,7 +110,9 @@ public static class Mapeamentos
         d.Data, d.Aberto, d.Abertura, d.Fechamento, d.PausaInicio, d.PausaFim,
         d.MotivoFechado, d.IntervaloSlotMinutos, d.TotalAgendamentos,
         d.Livres.Select(s => s.ParaDto()).ToList(),
-        d.MotivoSemEncaixe);
+        d.MotivoSemEncaixe,
+        d.Sugestoes?.Select(x => new SugestaoDeDiaDto(
+            x.Data, x.Slots.Select(s => s.ParaDto()).ToList())).ToList());
 
     public static VendaDto ParaDto(this Venda v) => new(
         v.Id, v.ClienteId, v.Cliente?.NomeExibicao ?? string.Empty, v.Status, v.CriadoEm,

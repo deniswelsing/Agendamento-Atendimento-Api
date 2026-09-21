@@ -160,7 +160,32 @@ public class PaginaPublicaService
         var limite = agora.AddHours(pagina.AntecedenciaMinimaHoras);
         var livres = dia.Livres.Where(s => s.Inicio >= limite).ToList();
 
-        return (ResultadoPublico.Sucesso, dia with { Livres = livres });
+        // Dia sem horário não pode ser o fim da conversa com quem está marcando sozinho:
+        // ou ele acha os próximos dias aqui, ou fecha a página. As mesmas regras valem —
+        // a janela da agenda online e a antecedência mínima.
+        var sugestoes = new List<SugestaoDeDia>();
+        if (livres.Count == 0)
+        {
+            for (var i = 1; i <= 30 && sugestoes.Count < 3; i++)
+            {
+                var outro = data.AddDays(i);
+                if (outro > ultima)
+                {
+                    break;
+                }
+
+                var diaSeguinte = await _disponibilidade.ObterDiaAsync(
+                    outro, duracao, escolher, ct, itensIds);
+                var horarios = diaSeguinte.Livres.Where(s => s.Inicio >= limite).Take(3).ToList();
+
+                if (horarios.Count > 0)
+                {
+                    sugestoes.Add(new SugestaoDeDia(outro, horarios));
+                }
+            }
+        }
+
+        return (ResultadoPublico.Sucesso, dia with { Livres = livres, Sugestoes = sugestoes });
     }
 
     /// <summary>

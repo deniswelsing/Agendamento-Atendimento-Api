@@ -44,6 +44,12 @@ public sealed record AtribuicaoDeServico(
     public int VagasRestantes => Math.Max(0, Capacidade - Inscritos);
 }
 
+/// <summary>
+/// Um dia próximo com encaixe, e os primeiros horários dele. Em lista, e não um "próximo
+/// dia" solto: quem marca precisa de opções na mesma resposta.
+/// </summary>
+public sealed record SugestaoDeDia(DateOnly Data, IReadOnlyList<SlotDisponivel> Slots);
+
 /// <summary>Encaixe livre devolvido para o app. O app não calcula nada: só exibe.</summary>
 public sealed record SlotDisponivel(
     DateTimeOffset Inicio,
@@ -67,11 +73,11 @@ public sealed record DiaDaAgenda(
     IReadOnlyList<SlotDisponivel> Livres,
     int TotalAgendamentos,
     /// <summary>
-    /// Quando o dia não tem encaixe, o primeiro dia que tem — para a tela poder dizer
-    /// "não hoje, mas na quinta" em vez de só mostrar vazio. Nulo quando há encaixe,
-    /// ou quando nenhum dia à frente serve.
+    /// Quando o dia não tem encaixe, os próximos dias que têm — para a tela poder dizer
+    /// "não hoje, mas na quinta às 14h" em vez de só mostrar vazio. Vazio quando há
+    /// encaixe, ou quando nenhum dia à frente serve.
     /// </summary>
-    DateOnly? ProximaData = null,
+    IReadOnlyList<SugestaoDeDia>? Sugestoes = null,
     /// <summary>
     /// Por que o dia não tem encaixe, quando o motivo não é a empresa estar fechada —
     /// tipicamente ninguém que preste o serviço está livre.
