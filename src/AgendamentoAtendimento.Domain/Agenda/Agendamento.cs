@@ -115,8 +115,14 @@ public class Agendamento : EntidadeDeTenant
     /// livre durante o primeiro. Em <see cref="ModoDeOcupacao.PorFuncionario"/> todo
     /// mundo que aparece no atendimento fica preso a ele do início ao fim.
     /// </summary>
-    public IEnumerable<(long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim)> Ocupacoes(
-        ModoDeOcupacao modo = ModoDeOcupacao.PorServico)
+    /// <param name="modo">Como a empresa conta ocupação.</param>
+    /// <returns>
+    /// `ItemCatalogoId` diz qual serviço gerou o bloqueio — é por ele que a grade
+    /// reconhece uma turma e continua oferecendo o horário enquanto houver vaga. Nulo
+    /// quando o bloqueio não vem de um serviço específico.
+    /// </returns>
+    public IEnumerable<(long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim, long? ItemCatalogoId)>
+        Ocupacoes(ModoDeOcupacao modo = ModoDeOcupacao.PorServico)
     {
         if (modo == ModoDeOcupacao.PorFuncionario)
         {
@@ -127,13 +133,16 @@ public class Agendamento : EntidadeDeTenant
             {
                 if ((item.ResponsavelId ?? ResponsavelId) is { } quem && vistos.Add(quem))
                 {
-                    yield return (quem, Inicio, Fim);
+                    // A janela é a do atendimento inteiro, então ela não representa um
+                    // serviço só: turma nesse modo vale apenas quando é o único serviço.
+                    yield return (quem, Inicio, Fim,
+                        Itens.Count == 1 ? item.ItemCatalogoId : null);
                 }
             }
 
             if (vistos.Count == 0 && ResponsavelId is { } unico)
             {
-                yield return (unico, Inicio, Fim);
+                yield return (unico, Inicio, Fim, null);
             }
 
             yield break;
@@ -149,14 +158,14 @@ public class Agendamento : EntidadeDeTenant
             }
 
             alguem = true;
-            yield return (responsavel.Value, inicio, fim);
+            yield return (responsavel.Value, inicio, fim, item.ItemCatalogoId);
         }
 
         // Agendamento sem item algum (ou sem ninguém em nenhum item) ainda ocupa quem
         // responde por ele: o compromisso existe na agenda.
         if (!alguem && ResponsavelId is { } dono)
         {
-            yield return (dono, Inicio, Fim);
+            yield return (dono, Inicio, Fim, null);
         }
     }
 }

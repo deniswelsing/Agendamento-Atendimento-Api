@@ -46,13 +46,17 @@ public sealed record ItemCatalogoDto(
     long ItemId, TipoItem Tipo, string Nome, string? Descricao, string? Categoria,
     decimal Preco, decimal Custo, int? DuracaoMinutos, int? Estoque, string? CodigoDeBarras,
     string? ImagemUrl, bool IsAtivo, decimal ComissaoPercentual, decimal TaxaPercentual,
-    bool VisivelOnline);
+    bool VisivelOnline,
+    /// <summary>Quantas pessoas cabem na mesma sessão. 1 é atendimento individual.</summary>
+    int CapacidadeTurma = 1,
+    bool EhTurma = false);
 
 public sealed record ItemCatalogoRequest(
     TipoItem Tipo, string Nome, string? Descricao, string? Categoria, decimal Preco,
     decimal Custo = 0, int? DuracaoMinutos = null, int? Estoque = null,
     string? CodigoDeBarras = null, string? ImagemUrl = null, bool IsAtivo = true,
-    decimal ComissaoPercentual = 0, decimal TaxaPercentual = 0, bool VisivelOnline = true);
+    decimal ComissaoPercentual = 0, decimal TaxaPercentual = 0, bool VisivelOnline = true,
+    int CapacidadeTurma = 1);
 
 // ------------------------------------------------------------------ agendamentos
 public sealed record ItemAgendadoDto(
@@ -150,7 +154,12 @@ public sealed record AtribuicaoDto(
     /// Quem mais poderia prestar este serviço neste horário. Um só quer dizer que não
     /// há escolha a fazer — a tela marca e segue.
     /// </summary>
-    IReadOnlyList<PessoaResumoDto> Candidatos);
+    IReadOnlyList<PessoaResumoDto> Candidatos,
+    /// <summary>Capacidade da sessão. 1 é atendimento individual.</summary>
+    int Capacidade = 1,
+    int Inscritos = 0,
+    bool EhTurma = false,
+    int VagasRestantes = 0);
 
 public sealed record SlotDto(
     DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome,

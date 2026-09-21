@@ -45,6 +45,16 @@ public class ItemCatalogo : EntidadeDeTenant
     /// </summary>
     public bool VisivelOnline { get; set; } = true;
 
+    /// <summary>
+    /// Quantas pessoas cabem na mesma sessão. 1 é atendimento individual — o padrão, e o
+    /// que todo serviço já era. Acima disso é turma: o horário continua sendo oferecido
+    /// enquanto houver vaga, em vez de sumir no primeiro inscrito.
+    /// </summary>
+    public int CapacidadeTurma { get; set; } = 1;
+
+    /// <summary>Turma é o serviço que aceita mais de uma pessoa na mesma sessão.</summary>
+    public bool EhTurma => Tipo == TipoItem.Servico && CapacidadeTurma > 1;
+
     public bool Agendavel => Tipo == TipoItem.Servico;
 }
 

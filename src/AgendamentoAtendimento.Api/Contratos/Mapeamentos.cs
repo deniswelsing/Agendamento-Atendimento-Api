@@ -52,7 +52,7 @@ public static class Mapeamentos
     public static ItemCatalogoDto ParaDto(this ItemCatalogo i) => new(
         i.Id, i.Tipo, i.Nome, i.Descricao, i.Categoria, i.Preco, i.Custo, i.DuracaoMinutos,
         i.Estoque, i.CodigoDeBarras, i.ImagemUrl, i.Ativo, i.ComissaoPercentual,
-        i.TaxaPercentual, i.VisivelOnline);
+        i.TaxaPercentual, i.VisivelOnline, i.CapacidadeTurma, i.EhTurma);
 
     public static void Aplicar(this ItemCatalogo i, ItemCatalogoRequest r)
     {
@@ -72,6 +72,9 @@ public static class Mapeamentos
         i.TaxaPercentual = r.TaxaPercentual;
         // Produto não vai para a página pública de jeito nenhum: ela só agenda serviço.
         i.VisivelOnline = r.Tipo == TipoItem.Servico && r.VisivelOnline;
+        // Turma só existe em serviço, e nunca abaixo de 1: capacidade zero seria um
+        // serviço que ninguém pode marcar.
+        i.CapacidadeTurma = r.Tipo == TipoItem.Servico ? Math.Max(1, r.CapacidadeTurma) : 1;
     }
 
     public static AgendamentoDto ParaDto(this Agendamento a) => new(
@@ -92,7 +95,8 @@ public static class Mapeamentos
             s.Atribuicoes.Select(a => new AtribuicaoDto(
                 a.ItemCatalogoId, a.Nome, a.Inicio, a.Fim,
                 a.ResponsavelId, a.ResponsavelNome,
-                a.Candidatos.Select(c => new PessoaResumoDto(c.UsuarioId, c.Nome)).ToList()))
+                a.Candidatos.Select(c => new PessoaResumoDto(c.UsuarioId, c.Nome)).ToList(),
+                a.Capacidade, a.Inscritos, a.EhTurma, a.VagasRestantes))
                 .ToList());
 
     public static DiaDaAgendaDto ParaDto(this DiaDaAgenda d) => new(

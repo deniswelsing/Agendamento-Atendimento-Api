@@ -269,6 +269,11 @@ public class ModoDeOcupacaoTests : IAsyncLifetime
         var ocupacoes = agendamento.Ocupacoes(ModoDeOcupacao.PorFuncionario).ToList();
 
         Assert.Single(ocupacoes);
-        Assert.Equal((7L, Em(8, 0), Em(9, 0)), ocupacoes[0]);
+        Assert.Equal(7L, ocupacoes[0].UsuarioId);
+        Assert.Equal(Em(8, 0), ocupacoes[0].Inicio);
+        Assert.Equal(Em(9, 0), ocupacoes[0].Fim);
+        // Dois serviços nesse modo viram uma janela só, que não representa nenhum deles:
+        // turma por funcionário só vale quando o serviço é único.
+        Assert.Null(ocupacoes[0].ItemCatalogoId);
     }
 }

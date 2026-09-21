@@ -27,10 +27,21 @@ public sealed record AtribuicaoDeServico(
     /// Vem a lista, e não só a contagem, porque quem marca pode querer outra pessoa: sem
     /// os nomes aqui a tela teria de perguntar de novo ao servidor a cada troca.
     /// </summary>
-    IReadOnlyList<PessoaResumo> Candidatos)
+    IReadOnlyList<PessoaResumo> Candidatos,
+    /// <summary>
+    /// Capacidade da turma. 1 é atendimento individual — a esmagadora maioria.
+    /// </summary>
+    int Capacidade = 1,
+    /// <summary>Quantas pessoas já estão nesta sessão.</summary>
+    int Inscritos = 0)
 {
     /// <summary>Um significa que não há escolha a fazer: a tela marca e segue.</summary>
     public int Alternativas => Candidatos.Count;
+
+    public bool EhTurma => Capacidade > 1;
+
+    /// <summary>Quantas ainda cabem. Zero numa turma cheia; irrelevante fora de turma.</summary>
+    public int VagasRestantes => Math.Max(0, Capacidade - Inscritos);
 }
 
 /// <summary>Encaixe livre devolvido para o app. O app não calcula nada: só exibe.</summary>
@@ -177,19 +188,24 @@ public class DisponibilidadeService
         // Ocupação por pessoa, no modo que a empresa escolheu: a união das janelas dos
         // itens dela, ou o atendimento inteiro.
         var modoDeOcupacao = await ModoAsync(ct);
-        var ocupacao = new Dictionary<long, List<(DateTimeOffset Inicio, DateTimeOffset Fim)>>();
+        var ocupacao = new Dictionary<long, List<Bloqueio>>();
         foreach (var agendamento in agendamentosDoDia)
         {
-            foreach (var (usuarioId, ini, fimOcup) in agendamento.Ocupacoes(modoDeOcupacao))
+            foreach (var (usuarioId, ini, fimOcup, itemDoBloqueio) in agendamento.Ocupacoes(modoDeOcupacao))
             {
                 if (!ocupacao.TryGetValue(usuarioId, out var lista))
                 {
-                    ocupacao[usuarioId] = lista = new List<(DateTimeOffset, DateTimeOffset)>();
+                    ocupacao[usuarioId] = lista = new List<Bloqueio>();
                 }
 
-                lista.Add((ini, fimOcup));
+                lista.Add(new Bloqueio(ini, fimOcup, itemDoBloqueio));
             }
         }
+
+        // Turmas: quantas pessoas já estão em cada sessão. A chave é o que define uma
+        // sessão — mesmo serviço, mesma pessoa atendendo, mesma janela.
+        var capacidades = await CapacidadesAsync(ct);
+        var inscritos = ContarInscritos(agendamentosDoDia, modoDeOcupacao);
 
         foreach (var ausencia in ausencias)
         {
@@ -197,13 +213,31 @@ public class DisponibilidadeService
             var fimAusencia = ausencia.DiaInteiro ? TimeOnly.MaxValue : ausencia.Fim ?? TimeOnly.MaxValue;
             if (!ocupacao.TryGetValue(ausencia.UsuarioId, out var lista))
             {
-                ocupacao[ausencia.UsuarioId] = lista = new List<(DateTimeOffset, DateTimeOffset)>();
+                ocupacao[ausencia.UsuarioId] = lista = new List<Bloqueio>();
             }
 
-            lista.Add((Combinar(data, iniAusencia), Combinar(data, fimAusencia)));
+            // Ausência não vem de serviço nenhum: nunca é uma turma em que se possa entrar.
+            lista.Add(new Bloqueio(
+                Combinar(data, iniAusencia), Combinar(data, fimAusencia), null));
         }
 
-        bool PodeAtender(Usuario quem, TimeOnly de, TimeOnly ate)
+        /// <summary>
+        /// Vagas que sobram na sessão de turma daquele serviço, naquela janela, com
+        /// aquela pessoa. Negativo nunca: cheia é zero.
+        /// </summary>
+        int VagasNaTurma(long itemId, long usuarioId, DateTimeOffset iniAbs, DateTimeOffset fimAbs)
+        {
+            var capacidade = capacidades.GetValueOrDefault(itemId, 1);
+            if (capacidade <= 1)
+            {
+                return 0;
+            }
+
+            var chave = new SessaoDeTurma(itemId, usuarioId, iniAbs, fimAbs);
+            return Math.Max(0, capacidade - inscritos.GetValueOrDefault(chave, 0));
+        }
+
+        bool PodeAtender(Usuario quem, TimeOnly de, TimeOnly ate, long? itemId = null)
         {
             var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == quem.Id);
             if (jornada is null || !jornada.Trabalha)
@@ -224,8 +258,27 @@ public class DisponibilidadeService
 
             var iniAbs = Combinar(data, de);
             var fimAbs = Combinar(data, ate);
-            return !ocupacao.TryGetValue(quem.Id, out var ocupados) ||
-                   !ocupados.Any(o => iniAbs < o.Fim && fimAbs > o.Inicio);
+            if (!ocupacao.TryGetValue(quem.Id, out var ocupados))
+            {
+                return true;
+            }
+
+            return !ocupados.Any(o =>
+            {
+                if (iniAbs >= o.Fim || fimAbs <= o.Inicio)
+                {
+                    return false;
+                }
+
+                // O bloqueio é a própria sessão de turma que estamos tentando entrar, e
+                // ela ainda tem vaga: o horário continua valendo. Sem isto, a turma
+                // sumiria da grade no primeiro inscrito, que é o oposto de ser turma.
+                return !(itemId is { } id
+                    && o.ItemCatalogoId == id
+                    && o.Inicio == iniAbs
+                    && o.Fim == fimAbs
+                    && VagasNaTurma(id, quem.Id, iniAbs, fimAbs) > 0);
+            });
         }
 
         var livres = new List<SlotDisponivel>();
@@ -234,7 +287,12 @@ public class DisponibilidadeService
         for (var t = inicioDoDia; AdicionarMinutos(t, duracaoTotal) <= fechamento.Value;
              t = AdicionarMinutos(t, intervalo))
         {
-            var atribuicoes = MontarCadeia(sequencia, habilitados, t, data, PodeAtender, modoDeOcupacao);
+            var atribuicoes = MontarCadeia(
+                sequencia, habilitados, t, data, PodeAtender, modoDeOcupacao,
+                (itemId, usuarioId, ini, fim) => itemId is { } id
+                    ? (capacidades.GetValueOrDefault(id, 1),
+                       inscritos.GetValueOrDefault(new SessaoDeTurma(id, usuarioId, ini, fim), 0))
+                    : (1, 0));
             if (atribuicoes is null)
             {
                 continue;
@@ -279,8 +337,10 @@ public class DisponibilidadeService
         IReadOnlyList<List<Usuario>> habilitados,
         TimeOnly inicio,
         DateOnly data,
-        Func<Usuario, TimeOnly, TimeOnly, bool> podeAtender,
-        ModoDeOcupacao modo)
+        Func<Usuario, TimeOnly, TimeOnly, long?, bool> podeAtender,
+        ModoDeOcupacao modo,
+        /// <summary>Capacidade e inscritos da sessão, para a tela poder dizer "3 de 8".</summary>
+        Func<long?, long, DateTimeOffset, DateTimeOffset, (int Capacidade, int Inscritos)> vagas)
     {
         var atribuicoes = new List<AtribuicaoDeServico>(sequencia.Count);
         var cursor = inicio;
@@ -298,7 +358,7 @@ public class DisponibilidadeService
                 : (cursor, fim);
 
             var candidatos = habilitados[i]
-                .Where(quem => podeAtender(quem, deChecagem, ateChecagem))
+                .Where(quem => podeAtender(quem, deChecagem, ateChecagem, etapa.ItemCatalogoId))
                 .ToList();
             if (candidatos.Count == 0)
             {
@@ -307,11 +367,15 @@ public class DisponibilidadeService
 
             var escolhido = candidatos.FirstOrDefault(quem => quem.Id == anterior?.Id) ?? candidatos[0];
 
+            var (capacidade, jaInscritos) = vagas(
+                etapa.ItemCatalogoId, escolhido.Id, Combinar(data, cursor), Combinar(data, fim));
+
             atribuicoes.Add(new AtribuicaoDeServico(
                 etapa.ItemCatalogoId ?? 0, etapa.Nome,
                 Combinar(data, cursor), Combinar(data, fim),
                 escolhido.Id, escolhido.Nome,
-                candidatos.Select(c => new PessoaResumo(c.Id, c.Nome)).ToList()));
+                candidatos.Select(c => new PessoaResumo(c.Id, c.Nome)).ToList(),
+                capacidade, jaInscritos));
 
             anterior = escolhido;
             cursor = fim;
@@ -446,11 +510,44 @@ public class DisponibilidadeService
         // Mesma conta da grade, e pelo mesmo modo: checar aqui de um jeito e lá de outro
         // deixaria a tela oferecer um encaixe que a criação depois recusa.
         var modoDaChecagem = await ModoAsync(ct);
-        var agendamentos = await AgendamentosDoDiaAsync(data, ct);
-        return !agendamentos
+        var agendamentos = (await AgendamentosDoDiaAsync(data, ct))
             .Where(a => a.Id != (ignorarAgendamentoId ?? 0))
+            .ToList();
+
+        var capacidade = itemCatalogoId is { } paraTurma
+            ? (await CapacidadesAsync(ct)).GetValueOrDefault(paraTurma, 1)
+            : 1;
+
+        var conflitos = agendamentos
             .SelectMany(a => a.Ocupacoes(modoDaChecagem))
-            .Any(o => o.UsuarioId == usuarioId && inicio < o.Fim && fim > o.Inicio);
+            .Where(o => o.UsuarioId == usuarioId && inicio < o.Fim && fim > o.Inicio)
+            .ToList();
+
+        if (conflitos.Count == 0)
+        {
+            return true;
+        }
+
+        // Turma: o conflito pode ser a própria sessão em que se quer entrar. Só vale
+        // quando TODO conflito é essa sessão — outro compromisso por cima continua
+        // impedindo, turma ou não.
+        if (capacidade <= 1 || itemCatalogoId is not { } daTurma)
+        {
+            return false;
+        }
+
+        var todosSaoDaMesmaSessao = conflitos.All(o =>
+            o.ItemCatalogoId == daTurma && o.Inicio == inicio && o.Fim == fim);
+
+        if (!todosSaoDaMesmaSessao)
+        {
+            return false;
+        }
+
+        var inscritos = ContarInscritos(agendamentos, modoDaChecagem)
+            .GetValueOrDefault(new SessaoDeTurma(daTurma, usuarioId, inicio, fim), 0);
+
+        return inscritos < capacidade;
     }
 
     /// <summary>
@@ -608,6 +705,46 @@ public class DisponibilidadeService
     /// O turno vem junto: quando a pessoa segue escala, é dele que saem os horários, e
     /// sem carregá-lo a janela efetiva cairia no valor antigo guardado na linha.
     /// </summary>
+    /// <summary>Um pedaço do dia em que alguém está comprometido, e por qual serviço.</summary>
+    private readonly record struct Bloqueio(
+        DateTimeOffset Inicio, DateTimeOffset Fim, long? ItemCatalogoId);
+
+    /// <summary>
+    /// A identidade de uma sessão de turma. Não há entidade para ela de propósito: uma
+    /// turma é o conjunto de agendamentos que caem no mesmo serviço, com a mesma pessoa,
+    /// na mesma janela — inventar uma tabela só duplicaria essa verdade.
+    /// </summary>
+    private readonly record struct SessaoDeTurma(
+        long ItemCatalogoId, long UsuarioId, DateTimeOffset Inicio, DateTimeOffset Fim);
+
+    /// <summary>Capacidade de cada serviço. 1 é atendimento individual.</summary>
+    private async Task<Dictionary<long, int>> CapacidadesAsync(CancellationToken ct) =>
+        await _db.ItensCatalogo.AsNoTracking()
+            .Where(i => i.CapacidadeTurma > 1)
+            .ToDictionaryAsync(i => i.Id, i => i.CapacidadeTurma, ct);
+
+    /// <summary>Quantas pessoas já estão em cada sessão de turma do dia.</summary>
+    private static Dictionary<SessaoDeTurma, int> ContarInscritos(
+        IEnumerable<Agendamento> agendamentos, ModoDeOcupacao modo)
+    {
+        var contagem = new Dictionary<SessaoDeTurma, int>();
+        foreach (var agendamento in agendamentos)
+        {
+            foreach (var (usuarioId, ini, fim, itemId) in agendamento.Ocupacoes(modo))
+            {
+                if (itemId is not { } id)
+                {
+                    continue;
+                }
+
+                var chave = new SessaoDeTurma(id, usuarioId, ini, fim);
+                contagem[chave] = contagem.GetValueOrDefault(chave, 0) + 1;
+            }
+        }
+
+        return contagem;
+    }
+
     private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct) =>
         await _db.HorariosStaff.AsNoTracking()
             .Include(h => h.Turno)
