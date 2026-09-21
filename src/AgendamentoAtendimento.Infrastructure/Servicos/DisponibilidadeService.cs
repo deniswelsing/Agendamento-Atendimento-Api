@@ -101,29 +101,66 @@ public class DisponibilidadeService
         _contexto = contexto;
     }
 
-    /// <summary>Como esta empresa conta ocupação. Sem tenant no contexto, o padrão.</summary>
-    private async Task<ModoDeOcupacao> ModoAsync(CancellationToken ct)
+    /// <summary>A política de agenda da empresa: modo de ocupação e tetos diários.</summary>
+    private sealed record PoliticaDaAgenda(
+        ModoDeOcupacao Modo, int LimiteDoDia, int LimitePorPessoa);
+
+    private PoliticaDaAgenda? _politica;
+
+    private async Task<PoliticaDaAgenda> PoliticaAsync(CancellationToken ct)
     {
-        if (_modo is { } jaLido)
+        if (_politica is { } jaLida)
         {
-            return jaLido;
+            return jaLida;
         }
 
         var tenantId = _contexto.TenantId;
         if (tenantId is null)
         {
-            return (_modo = ModoDeOcupacao.PorServico).Value;
+            return _politica = new PoliticaDaAgenda(ModoDeOcupacao.PorServico, 0, 0);
         }
 
         // Tenant não é entidade de tenant: o filtro global não se aplica, então a busca é
         // pelo id mesmo.
-        var modo = await _db.Tenants
+        var lida = await _db.Tenants
             .AsNoTracking()
             .Where(t => t.Id == tenantId)
-            .Select(t => (ModoDeOcupacao?)t.ModoDeOcupacao)
+            .Select(t => new PoliticaDaAgenda(
+                t.ModoDeOcupacao, t.LimiteDiarioDeAtendimentos, t.LimiteDiarioPorPessoa))
             .FirstOrDefaultAsync(ct);
 
-        return (_modo = modo ?? ModoDeOcupacao.PorServico).Value;
+        return _politica = lida is null || !Enum.IsDefined(lida.Modo)
+            ? new PoliticaDaAgenda(ModoDeOcupacao.PorServico, lida?.LimiteDoDia ?? 0,
+                lida?.LimitePorPessoa ?? 0)
+            : lida;
+    }
+
+    /// <summary>Como esta empresa conta ocupação. Sem tenant no contexto, o padrão.</summary>
+    private async Task<ModoDeOcupacao> ModoAsync(CancellationToken ct) =>
+        _modo ??= (await PoliticaAsync(ct)).Modo;
+
+    /// <summary>
+    /// Quantos atendimentos cada pessoa já tem no dia, e quantos a empresa tem no total.
+    /// Um atendimento conta UMA vez por pessoa, mesmo passando por dois serviços dela:
+    /// o teto é de atendimentos, não de serviços.
+    /// </summary>
+    private static (int Total, Dictionary<long, int> PorPessoa) ContarDoDia(
+        IReadOnlyList<Agendamento> agendamentos)
+    {
+        var porPessoa = new Dictionary<long, int>();
+        foreach (var agendamento in agendamentos)
+        {
+            foreach (var quem in agendamento.Itens
+                         .Select(i => i.ResponsavelId ?? agendamento.ResponsavelId)
+                         .Concat(new[] { agendamento.ResponsavelId })
+                         .OfType<long>()
+                         .Distinct())
+            {
+                porPessoa[quem] = porPessoa.GetValueOrDefault(quem, 0) + 1;
+            }
+        }
+
+        return (agendamentos.Count, porPessoa);
     }
 
     public async Task<DiaDaAgenda> ObterDiaAsync(
@@ -187,7 +224,20 @@ public class DisponibilidadeService
 
         // Ocupação por pessoa, no modo que a empresa escolheu: a união das janelas dos
         // itens dela, ou o atendimento inteiro.
-        var modoDeOcupacao = await ModoAsync(ct);
+        var politica = await PoliticaAsync(ct);
+        var modoDeOcupacao = politica.Modo;
+        var (totalDoDia, atendimentosPorPessoa) = ContarDoDia(agendamentosDoDia);
+
+        // O dia cheio não oferece nada, e diz por quê: um dia em branco sem motivo
+        // parece empresa fechada, que é outra coisa.
+        if (politica.LimiteDoDia > 0 && totalDoDia >= politica.LimiteDoDia)
+        {
+            return new DiaDaAgenda(
+                data, true, abertura, fechamento, pausaInicio, pausaFim, null,
+                intervalo, Array.Empty<SlotDisponivel>(), agendamentosDoDia.Count, null,
+                $"A empresa fechou a agenda do dia: {totalDoDia} de "
+                + $"{politica.LimiteDoDia} atendimentos.");
+        }
         var ocupacao = new Dictionary<long, List<Bloqueio>>();
         foreach (var agendamento in agendamentosDoDia)
         {
@@ -241,6 +291,14 @@ public class DisponibilidadeService
         {
             var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == quem.Id);
             if (jornada is null || !jornada.Trabalha)
+            {
+                return false;
+            }
+
+            // Quem já bateu o próprio teto no dia sai da grade. A empresa pode aguentar
+            // vinte atendimentos num dia em que ninguém deveria fazer mais de seis.
+            if (politica.LimitePorPessoa > 0
+                && atendimentosPorPessoa.GetValueOrDefault(quem.Id, 0) >= politica.LimitePorPessoa)
             {
                 return false;
             }
@@ -308,11 +366,20 @@ public class DisponibilidadeService
 
         var ordenados = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
 
+        var todosNoTeto = politica.LimitePorPessoa > 0 && atendentes.Count > 0
+            && atendentes.All(a =>
+                atendimentosPorPessoa.GetValueOrDefault(a.Id, 0) >= politica.LimitePorPessoa);
+
         var motivo = ordenados.Count > 0
             ? null
             : habilitados.Any(h => h.Count == 0)
                 ? "Ninguém do time presta esse serviço."
-                : "Ninguém que presta esse serviço está livre neste dia.";
+                // "Ninguém está livre" seria mentira quando o que fechou o dia foi o
+                // teto, e não a agenda.
+                : todosNoTeto
+                    ? $"Todo o time já bateu o teto de {politica.LimitePorPessoa} "
+                      + "atendimento(s) por dia."
+                    : "Ninguém que presta esse serviço está livre neste dia.";
 
         return new DiaDaAgenda(
             data, true, abertura, fechamento, pausaInicio, pausaFim, null,
@@ -509,10 +576,25 @@ public class DisponibilidadeService
 
         // Mesma conta da grade, e pelo mesmo modo: checar aqui de um jeito e lá de outro
         // deixaria a tela oferecer um encaixe que a criação depois recusa.
-        var modoDaChecagem = await ModoAsync(ct);
+        var politicaDaChecagem = await PoliticaAsync(ct);
+        var modoDaChecagem = politicaDaChecagem.Modo;
         var agendamentos = (await AgendamentosDoDiaAsync(data, ct))
             .Where(a => a.Id != (ignorarAgendamentoId ?? 0))
             .ToList();
+
+        // Os tetos valem aqui também: sem isto, a criação direta furaria o limite que a
+        // grade respeita.
+        var (totalNoDia, porPessoaNoDia) = ContarDoDia(agendamentos);
+        if (politicaDaChecagem.LimiteDoDia > 0 && totalNoDia >= politicaDaChecagem.LimiteDoDia)
+        {
+            return false;
+        }
+
+        if (politicaDaChecagem.LimitePorPessoa > 0
+            && porPessoaNoDia.GetValueOrDefault(usuarioId, 0) >= politicaDaChecagem.LimitePorPessoa)
+        {
+            return false;
+        }
 
         var capacidade = itemCatalogoId is { } paraTurma
             ? (await CapacidadesAsync(ct)).GetValueOrDefault(paraTurma, 1)

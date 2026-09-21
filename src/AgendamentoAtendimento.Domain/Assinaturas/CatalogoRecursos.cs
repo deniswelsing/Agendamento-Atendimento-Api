@@ -93,7 +93,8 @@ public static class CatalogoRecursos
         new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2, Disponivel: false),
         new(ListaDeEspera, "Lista de espera", GrupoAgenda, 2,
             "Quem ficou sem horário entra na fila, e cancelar mostra quem chamar."),
-        new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2, Disponivel: false),
+        new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2,
+            "Teto de atendimentos por dia, no total e por pessoa do time."),
 
         new(RelatoriosAvancados, "Relatórios avançados e lucratividade", GrupoGestao, 3, Disponivel: false),
         new(Comissoes, "Comissões e folha do time", GrupoTime, 3,

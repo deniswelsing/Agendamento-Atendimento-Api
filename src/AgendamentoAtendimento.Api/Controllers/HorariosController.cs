@@ -227,6 +227,73 @@ public class HorariosController : ControllerBaseApi
             ? lido
             : ModoDeOcupacao.PorServico;
 
+    // --------------------------------------------------------------- limite diário
+    /// <summary>
+    /// Os tetos de atendimento por dia. Ficam aqui porque são da mesma natureza do
+    /// horário: definem o que a agenda ainda oferece.
+    /// </summary>
+    [HttpGet("limite-diario")]
+    [RequerPermissao("horarios.ver")]
+    public async Task<ActionResult<LimiteDiarioDto>> LimiteDiario(
+        [FromQuery] DateOnly? data, CancellationToken ct = default)
+    {
+        var tenant = NaoNulo(
+            await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == TenantId, ct),
+            "Empresa não encontrada.");
+
+        var dia = data ?? DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        var usados = await ContarDoDiaAsync(dia, ct);
+
+        return Ok(Montar(tenant.LimiteDiarioDeAtendimentos, tenant.LimiteDiarioPorPessoa, usados));
+    }
+
+    [HttpPut("limite-diario")]
+    [RequerPermissao("horarios.editar")]
+    [RequerRecurso(CatalogoRecursos.LimiteDiario)]
+    public async Task<ActionResult<LimiteDiarioDto>> SalvarLimiteDiario(
+        LimiteDiarioRequest req, CancellationToken ct)
+    {
+        if (req.LimiteDoDia < 0 || req.LimitePorPessoa < 0)
+        {
+            throw new RegraDeNegocioException("O teto não pode ser negativo.", "LIMITE_INVALIDO");
+        }
+
+        // Um teto por pessoa maior que o do dia nunca seria alcançado: o do dia fecharia
+        // a agenda antes. Deixar passar daria um número que não faz nada.
+        if (req.LimiteDoDia > 0 && req.LimitePorPessoa > req.LimiteDoDia)
+        {
+            throw new RegraDeNegocioException(
+                $"O teto por pessoa ({req.LimitePorPessoa}) não pode passar do teto do dia "
+                + $"({req.LimiteDoDia}): o do dia fecharia a agenda antes.",
+                "LIMITE_INCOERENTE");
+        }
+
+        var tenant = NaoNulo(
+            await _db.Tenants.FirstOrDefaultAsync(t => t.Id == TenantId, ct),
+            "Empresa não encontrada.");
+
+        tenant.LimiteDiarioDeAtendimentos = req.LimiteDoDia;
+        tenant.LimiteDiarioPorPessoa = req.LimitePorPessoa;
+        await _db.SaveChangesAsync(ct);
+
+        var hoje = DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        return Ok(Montar(req.LimiteDoDia, req.LimitePorPessoa, await ContarDoDiaAsync(hoje, ct)));
+    }
+
+    private Task<int> ContarDoDiaAsync(DateOnly dia, CancellationToken ct)
+    {
+        var inicio = new DateTimeOffset(dia.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var fim = inicio.AddDays(1);
+        return _db.Agendamentos.CountAsync(
+            a => a.Inicio < fim && a.Fim > inicio && a.Status != StatusAgendamento.Cancelado, ct);
+    }
+
+    private static LimiteDiarioDto Montar(int doDia, int porPessoa, int usados) => new(
+        doDia, porPessoa, usados, doDia > 0, porPessoa > 0,
+        doDia > 0
+            ? $"{usados} de {doDia} atendimento(s) hoje."
+            : $"{usados} atendimento(s) hoje, sem teto.");
+
     // ------------------------------------------------------------------- turnos
     /// <summary>
     /// Os turnos da escala. Existem para não redigitar o mesmo horário em cada pessoa e

@@ -22,6 +22,22 @@ public class Tenant : Entidade
     public ModoDeOcupacao ModoDeOcupacao { get; set; } = ModoDeOcupacao.PorServico;
 
     /// <summary>
+    /// Teto de atendimentos que a empresa aceita por dia. Zero é sem limite — e é o
+    /// padrão, porque uma empresa que nunca pediu teto não pode ganhar um.
+    ///
+    /// Serve a quem prefere atender bem menos gente do que mal muita: o dia fecha quando
+    /// enche, em vez de a agenda continuar oferecendo horário até não caber.
+    /// </summary>
+    public int LimiteDiarioDeAtendimentos { get; set; }
+
+    /// <summary>
+    /// O mesmo teto, por pessoa do time. Existe separado porque as duas perguntas são
+    /// diferentes: a empresa pode aguentar vinte atendimentos num dia em que ninguém
+    /// deveria fazer mais de seis.
+    /// </summary>
+    public int LimiteDiarioPorPessoa { get; set; }
+
+    /// <summary>
     /// Identificador opaco enviado ao Google Play como `obfuscatedAccountId`.
     /// É por ele que a RTDN do Play é ligada de volta ao tenant.
     /// </summary>

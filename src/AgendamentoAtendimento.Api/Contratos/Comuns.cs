@@ -361,6 +361,20 @@ public sealed record ModoDeOcupacaoDto(ModoDeOcupacao Modo, string Rotulo, strin
 
 public sealed record ModoDeOcupacaoRequest(ModoDeOcupacao Modo);
 
+/// <summary>
+/// Os tetos diários da empresa. Zero é sem limite — e é o padrão, porque uma empresa que
+/// nunca pediu teto não pode ganhar um.
+/// </summary>
+public sealed record LimiteDiarioDto(
+    int LimiteDoDia, int LimitePorPessoa,
+    /// <summary>Quantos atendimentos o dia consultado já tem.</summary>
+    int UsadosHoje,
+    bool TemLimiteDoDia, bool TemLimitePorPessoa,
+    /// <summary>`12 de 20 atendimentos hoje` ou `sem teto`, pronto para a tela.</summary>
+    string Resumo);
+
+public sealed record LimiteDiarioRequest(int LimiteDoDia = 0, int LimitePorPessoa = 0);
+
 public sealed record HorarioFuncionamentoDto(
     long HorarioId, DayOfWeek DiaDaSemana, bool Aberto, TimeOnly? Abertura, TimeOnly? Fechamento,
     TimeOnly? PausaInicio, TimeOnly? PausaFim, string TipoDia, int IntervaloSlotMinutos);
