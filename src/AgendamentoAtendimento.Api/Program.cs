@@ -92,6 +92,8 @@ builder.Services
         opcoes.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         // Enums viajam como texto: o app lê "EMPRESA", não 2.
         opcoes.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+        // Hora com ou sem segundos: "09:00" é o que um campo de hora produz.
+        opcoes.JsonSerializerOptions.Converters.Add(new HoraFlexivelConverter());
     });
 
 builder.Services.AddEndpointsApiExplorer();

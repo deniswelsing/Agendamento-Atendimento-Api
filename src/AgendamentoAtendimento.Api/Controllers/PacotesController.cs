@@ -289,6 +289,19 @@ public class PacotesController : ControllerBaseApi
                 .OrderByDescending(c => c.Ciclo).FirstOrDefaultAsync(ct),
             "Este cliente não tem ciclo aberto no pacote.");
 
+        // A sessão pertence ao ciclo que a paga, então ela acontece dentro dele. Marcar
+        // fora deixaria o saldo deste ciclo pagar um atendimento do seguinte — e num
+        // pacote sem recorrência, o estorno do que sobrou sairia com o atendimento ainda
+        // marcado lá na frente.
+        var dia = DateOnly.FromDateTime(req.Inicio.UtcDateTime);
+        if (dia < ciclo.Inicio || dia > ciclo.Fim)
+        {
+            throw new RegraDeNegocioException(
+                $"Este ciclo vai de {ciclo.Inicio:dd/MM/yyyy} a {ciclo.Fim:dd/MM/yyyy}. "
+                + "O que não couber nele vira crédito no próximo — ou estorno, se não houver.",
+                "FORA_DO_CICLO");
+        }
+
         var marcados = await _db.Agendamentos.CountAsync(
             a => a.PacoteClienteId == vinculo.Id && a.PacoteCiclo == ciclo.Ciclo
                  && a.Status != StatusAgendamento.Cancelado, ct);
@@ -506,10 +519,13 @@ public class PacotesController : ControllerBaseApi
             ? 0m
             : decimal.Round(m.Preco / m.Quantidade, 2, MidpointRounding.AwayFromZero);
 
+        // Sem o preço no texto: escrito aqui ele sairia na cultura do servidor — que é a
+        // invariante, e imprimia "¤1.200,00" —, enquanto o app já sabe a moeda do tenant e
+        // recebe `Preco` como número. O texto é do servidor, a moeda é de quem lê.
         return new PacoteModeloDto(
             m.Id, m.Nome, m.Descricao, m.Quantidade, m.Preco, m.Recorrencia, m.Ativo,
             itens, valor,
-            $"{m.Quantidade} atendimento(s) · {Periodo(m.Recorrencia)} · {m.Preco:C}");
+            $"{m.Quantidade} atendimento(s) · {Periodo(m.Recorrencia)}");
     }
 
     private static string Periodo(RecorrenciaDePacote r) => r switch

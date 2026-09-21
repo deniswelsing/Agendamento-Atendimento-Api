@@ -140,8 +140,14 @@ public class PacoteAgendaService
 
         // Gera com folga e descarta as semanas já marcadas: pedir exatamente `faltam`
         // datas devolveria menos propostas do que sessões a marcar.
+        //
+        // O ciclo é o teto. Propor além do fim dele marcaria, dentro deste ciclo, uma
+        // sessão que acontece no seguinte: na virada o saldo já teria sido contado como
+        // usado aqui, e num pacote sem recorrência o cliente receberia o estorno das
+        // sessões que sobraram com um atendimento marcado no futuro. O que não couber no
+        // ciclo é justamente o que vira crédito — ou estorno — quando ele fecha.
         var datas = DatasDaPreferencia(vinculo.DiaDaSemana, apartirDe, faltam + ocupadas.Count)
-            .Where(d => !ocupadas.Contains(d))
+            .Where(d => !ocupadas.Contains(d) && d <= ciclo.Fim)
             .Take(faltam)
             .ToList();
         if (datas.Count == 0)
