@@ -132,6 +132,7 @@ public class CatalogoRecursosTests
             CatalogoRecursos.Onboarding,
             CatalogoRecursos.PaginaOnline,
             CatalogoRecursos.PermissoesAvancadas,
+            CatalogoRecursos.Turmas,
             CatalogoRecursos.Vendas,
         }.OrderBy(c => c, StringComparer.Ordinal), prontos);
     }
@@ -160,8 +161,8 @@ public class CatalogoRecursosTests
         var platinum = Plano("PLATINUM", 2, CatalogoRecursos.ListaAteNivel(2));
 
         Assert.Equal(18, platinum.ChavesDeRecurso().Count);
-        Assert.True(platinum.Libera(CatalogoRecursos.Turmas));
-        Assert.False(CatalogoRecursos.Obter(CatalogoRecursos.Turmas)!.Disponivel);
+        Assert.True(platinum.Libera(CatalogoRecursos.AgendamentoRecorrente));
+        Assert.False(CatalogoRecursos.Obter(CatalogoRecursos.AgendamentoRecorrente)!.Disponivel);
     }
 
     /// <summary>

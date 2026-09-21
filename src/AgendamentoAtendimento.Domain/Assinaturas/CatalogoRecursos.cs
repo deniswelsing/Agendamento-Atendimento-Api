@@ -90,7 +90,7 @@ public static class CatalogoRecursos
         new(GoogleCalendar, "Sincronização com Google Calendar", GrupoAgenda, 2, Disponivel: false),
         new(AgendamentoRecorrente, "Agendamento recorrente", GrupoAgenda, 2, Disponivel: false),
         new(SemMarca, "Sem a marca da plataforma", GrupoAgenda, 2, Disponivel: false),
-        new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2, Disponivel: false),
+        new(Turmas, "Agendamento de turmas e aulas", GrupoAgenda, 2),
         new(ListaDeEspera, "Lista de espera", GrupoAgenda, 2,
             "Quem ficou sem horário entra na fila, e cancelar mostra quem chamar."),
         new(LimiteDiario, "Limite diário de agendamentos", GrupoAgenda, 2,
