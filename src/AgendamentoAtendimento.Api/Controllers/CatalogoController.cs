@@ -157,6 +157,58 @@ public class CatalogoController : ControllerBaseApi
     }
 
     /// <summary>
+    /// Quem presta cada um de vários serviços, numa pergunta só.
+    ///
+    /// A tela de novo agendamento precisa disto para oferecer, ao lado de cada serviço
+    /// marcado, apenas quem sabe prestá-lo — e para marcar de uma vez tudo o que uma
+    /// pessoa presta. Perguntar item a item seria uma requisição por linha do catálogo.
+    ///
+    /// Sem <c>itensIds</c> responde por todos os serviços ativos, que é o que essa tela
+    /// carrega de qualquer forma. Id que não existe simplesmente não volta: a tela usa a
+    /// resposta para montar opções, e um erro por causa de um item apagado enquanto ela
+    /// estava aberta não ajudaria ninguém.
+    /// </summary>
+    [HttpGet("executores")]
+    [RequerPermissao("catalogo.ver")]
+    public async Task<ActionResult<IReadOnlyList<ExecutoresDoServicoDto>>> ExecutoresEmLote(
+        [FromQuery] long[]? itensIds, CancellationToken ct)
+    {
+        var pedidos = (itensIds ?? Array.Empty<long>()).Distinct().ToList();
+
+        var itens = await _db.ItensCatalogo.AsNoTracking()
+            .Where(i => i.Tipo == TipoItem.Servico)
+            .Where(i => pedidos.Count > 0 ? pedidos.Contains(i.Id) : i.Ativo)
+            .OrderBy(i => i.Nome)
+            .Select(i => new { i.Id, i.Nome })
+            .ToListAsync(ct);
+
+        var ids = itens.Select(i => i.Id).ToList();
+
+        var vinculos = await _db.ExecutoresDeServico.AsNoTracking()
+            .Where(e => ids.Contains(e.ItemCatalogoId))
+            .Select(e => new { e.ItemCatalogoId, e.UsuarioId })
+            .ToListAsync(ct);
+
+        var usuariosIds = vinculos.Select(v => v.UsuarioId).Distinct().ToList();
+        var pessoas = await _db.Usuarios.AsNoTracking().Include(u => u.Perfil)
+            .Where(u => usuariosIds.Contains(u.Id)).OrderBy(u => u.Nome).ToListAsync(ct);
+
+        var porItem = vinculos.GroupBy(v => v.ItemCatalogoId)
+            .ToDictionary(g => g.Key, g => g.Select(v => v.UsuarioId).ToHashSet());
+        var vazio = new HashSet<long>();
+
+        return Ok(itens.Select(item =>
+        {
+            var doItem = porItem.GetValueOrDefault(item.Id, vazio);
+            return new ExecutoresDoServicoDto(
+                item.Id,
+                item.Nome,
+                pessoas.Where(u => doItem.Contains(u.Id)).Select(u => u.ParaDto()).ToList(),
+                doItem.Count == 0);
+        }).ToList());
+    }
+
+    /// <summary>
     /// Define quem presta o serviço. Mandar lista vazia reabre para todo o time.
     ///
     /// A gravação é por diferença: quem já estava e continua não é tocado, para não
