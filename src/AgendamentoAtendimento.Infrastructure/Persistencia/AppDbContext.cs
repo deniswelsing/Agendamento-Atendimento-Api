@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Text.Json;
 using AgendamentoAtendimento.Domain.Agenda;
+using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Auditoria;
 using AgendamentoAtendimento.Domain.Catalogo;
@@ -37,6 +38,14 @@ public class AppDbContext : DbContext
     public DbSet<Agendamento> Agendamentos => Set<Agendamento>();
     public DbSet<Turno> Turnos => Set<Turno>();
     public DbSet<EntradaListaDeEspera> ListaDeEspera => Set<EntradaListaDeEspera>();
+
+    // --- pacotes pré-pagos
+    public DbSet<PacoteModelo> PacoteModelos => Set<PacoteModelo>();
+    public DbSet<PacoteModeloItem> PacoteModeloItens => Set<PacoteModeloItem>();
+    public DbSet<Pacote> Pacotes => Set<Pacote>();
+    public DbSet<PacoteItem> PacoteItens => Set<PacoteItem>();
+    public DbSet<PacoteCliente> PacoteClientes => Set<PacoteCliente>();
+    public DbSet<CicloDoCliente> CiclosDePacote => Set<CicloDoCliente>();
     public DbSet<ConfiguracaoDeLembrete> ConfiguracoesDeLembrete => Set<ConfiguracaoDeLembrete>();
     public DbSet<LembreteDeAgendamento> Lembretes => Set<LembreteDeAgendamento>();
     public DbSet<AgendamentoItem> AgendamentoItens => Set<AgendamentoItem>();

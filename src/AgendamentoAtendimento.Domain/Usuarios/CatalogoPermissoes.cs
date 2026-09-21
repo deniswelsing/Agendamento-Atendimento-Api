@@ -81,6 +81,12 @@ public static class Permissoes
             new AcaoPermissao("chamar", "Avisar quem está esperando"),
             new AcaoPermissao("remover", "Tirar da fila", Destrutiva: true),
         }),
+        new("pacotes", "Pacotes pré-pagos", "pacotes", new[]
+        {
+            Ver, Criar, Editar,
+            new AcaoPermissao("agendar", "Marcar a agenda do cliente no pacote"),
+            new AcaoPermissao("encerrar", "Tirar cliente do pacote e estornar", Destrutiva: true),
+        }),
         new("lembretes", "Lembretes e confirmação", "lembretes", new[]
         {
             Ver, Editar,

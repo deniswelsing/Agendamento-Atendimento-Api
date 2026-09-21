@@ -1,3 +1,4 @@
+using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Catalogo;
@@ -541,3 +542,71 @@ public sealed record BootstrapDto(
     IReadOnlyList<FormaPagamentoDto> FormasPagamento,
     IReadOnlyList<HorarioFuncionamentoDto> HorarioFuncionamento,
     IReadOnlyDictionary<string, IReadOnlyList<OpcaoDto>> Opcoes);
+
+// --------------------------------------------------------------------- pacotes
+public sealed record PacoteModeloDto(
+    long PacoteModeloId, string Nome, string? Descricao, int Quantidade, decimal Preco,
+    RecorrenciaDePacote Recorrencia, bool Ativo,
+    IReadOnlyList<ItemDoPacoteDto> Itens,
+    /// <summary>O que uma sessão vale. É a conta do estorno, pronta de cá.</summary>
+    decimal ValorPorAtendimento,
+    /// <summary>"4 atendimentos · mensal · R$ 200,00" — montado aqui para não divergir.</summary>
+    string Resumo);
+
+public sealed record ItemDoPacoteDto(long ItemId, string Nome, int DuracaoMinutos, decimal Preco);
+
+public sealed record PacoteModeloRequest(
+    string Nome, string? Descricao, int Quantidade, decimal Preco,
+    RecorrenciaDePacote Recorrencia, IReadOnlyList<long> ItensIds, bool Ativo = true);
+
+public sealed record CicloDoClienteDto(
+    int Ciclo, DateOnly Inicio, DateOnly Fim, int QuantidadeContratada, int CreditoRecebido,
+    int QuantidadeUsada, int Total, int Disponivel, bool Encerrado,
+    int CreditoCedido, int EstornoQuantidade, decimal EstornoValor);
+
+public sealed record PacoteClienteDto(
+    long PacoteClienteId, long PacoteId, long ClienteId, string ClienteNome,
+    DayOfWeek? DiaDaSemana, TimeOnly? Hora, long? ResponsavelPreferidoId,
+    string? ResponsavelPreferidoNome, bool Ativo,
+    CicloDoClienteDto? CicloAtual,
+    /// <summary>"Toda quarta às 14:00" — ou vazio quando não há dia fixo.</summary>
+    string Preferencia,
+    /// <summary>Quantas sessões ainda faltam marcar neste ciclo.</summary>
+    int FaltamMarcar);
+
+public sealed record PacoteDto(
+    long PacoteId, long? PacoteModeloId, string Nome, int QuantidadePorCliente,
+    decimal PrecoPorCliente, RecorrenciaDePacote Recorrencia, StatusDePacote Status,
+    int CicloAtual, DateOnly InicioDoCicloAtual, DateOnly FimDoCicloAtual,
+    bool EhRecorrente, decimal ValorPorAtendimento, int DiasAteVencer,
+    IReadOnlyList<ItemDoPacoteDto> Itens,
+    IReadOnlyList<PacoteClienteDto> Clientes,
+    string Resumo);
+
+public sealed record PacoteRequest(
+    string Nome, int QuantidadePorCliente, decimal PrecoPorCliente,
+    RecorrenciaDePacote Recorrencia, IReadOnlyList<long> ItensIds,
+    DateOnly? InicioDoCicloAtual = null,
+    /// <summary>Quando vem de um modelo, o resto pode vir dele — e vem.</summary>
+    long? PacoteModeloId = null);
+
+public sealed record EntrarNoPacoteRequest(
+    long ClienteId, DayOfWeek? DiaDaSemana, TimeOnly? Hora, long? ResponsavelPreferidoId);
+
+public sealed record PropostaDePacoteDto(
+    DateOnly Data, DateTimeOffset? Inicio, DateTimeOffset? Fim,
+    long? ResponsavelId, string? ResponsavelNome,
+    IReadOnlyList<PessoaResumoDto> Candidatos, bool TemEncaixe, string? Observacao);
+
+/// <summary>Uma proposta aceita, do jeito que a tela a devolve para marcar.</summary>
+public sealed record MarcarDoPacoteRequest(
+    DateTimeOffset Inicio, long? ResponsavelId);
+
+public sealed record AvisoDeRenovacaoDto(
+    long PacoteId, string Nome, int Ciclo, DateOnly Vence, int DiasAteVencer,
+    int Clientes, RecorrenciaDePacote Recorrencia, string Texto);
+
+public sealed record VarreduraDePacotesDto(
+    DateOnly Data, IReadOnlyList<AvisoDeRenovacaoDto> Avisos, int CiclosEncerrados,
+    int CiclosAbertos, int PacotesEncerrados, int EstornosGerados, decimal ValorEstornado,
+    string Resumo);

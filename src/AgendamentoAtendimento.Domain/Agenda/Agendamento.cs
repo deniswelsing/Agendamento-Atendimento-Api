@@ -72,6 +72,18 @@ public class Agendamento : EntidadeDeTenant
     /// <summary>Venda gerada na conclusão do atendimento.</summary>
     public long? VendaId { get; set; }
 
+    /// <summary>
+    /// O cliente-no-pacote que este atendimento consome. Nulo é atendimento avulso — a
+    /// esmagadora maioria. É por aqui que o saldo do pacote sabe o que já foi usado.
+    /// </summary>
+    public long? PacoteClienteId { get; set; }
+
+    /// <summary>
+    /// De qual ciclo do pacote ele saiu. Sem isto, um atendimento remarcado para depois
+    /// da virada descontaria do ciclo errado.
+    /// </summary>
+    public int? PacoteCiclo { get; set; }
+
     /// <summary>Quem marcou: o time pelo app, ou o próprio cliente na página pública.</summary>
     public OrigemAgendamento Origem { get; set; } = OrigemAgendamento.Interno;
 

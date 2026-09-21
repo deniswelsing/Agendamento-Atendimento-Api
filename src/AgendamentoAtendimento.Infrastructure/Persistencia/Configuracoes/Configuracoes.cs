@@ -4,6 +4,7 @@ using AgendamentoAtendimento.Domain.Auditoria;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.MultiTenancy;
+using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Domain.Vendas;
 using Microsoft.EntityFrameworkCore;
@@ -222,6 +223,9 @@ public class AgendamentoConfig : IEntityTypeConfiguration<Agendamento>
 {
     public void Configure(EntityTypeBuilder<Agendamento> b)
     {
+        // O pacote que este atendimento consome. Restrict: apagar o vínculo por baixo
+        // deixaria o saldo do pacote contando um atendimento que ninguém acha.
+        b.HasIndex(a => new { a.TenantId, a.PacoteClienteId, a.PacoteCiclo });
         b.Property(a => a.Observacoes).HasMaxLength(1000);
         b.Property(a => a.LocalAtendimento).HasMaxLength(250);
         b.Property(a => a.MotivoCancelamento).HasMaxLength(500);
@@ -499,5 +503,100 @@ public class AuditLogConfig : IEntityTypeConfiguration<AuditLog>
         b.Property(a => a.Ip).HasMaxLength(64);
         b.Property(a => a.Alteracoes).HasColumnType("jsonb");
         b.HasIndex(a => new { a.TenantId, a.CriadoEm });
+    }
+}
+
+public class PacoteModeloConfig : IEntityTypeConfiguration<PacoteModelo>
+{
+    public void Configure(EntityTypeBuilder<PacoteModelo> b)
+    {
+        b.Property(p => p.Nome).HasMaxLength(120).IsRequired();
+        b.Property(p => p.Descricao).HasMaxLength(500);
+        b.Property(p => p.Preco).HasPrecision(18, 2);
+        b.Property(p => p.Recorrencia).HasConversion<int>().IsRequired();
+        b.Ignore(p => p.Itens);
+        b.HasMany<PacoteModeloItem>().WithOne(i => i.PacoteModelo)
+            .HasForeignKey(i => i.PacoteModeloId).OnDelete(DeleteBehavior.Cascade);
+        // Dois modelos com o mesmo nome deixariam quem vende escolhendo no escuro.
+        b.HasIndex(p => new { p.TenantId, p.Nome }).IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
+public class PacoteModeloItemConfig : IEntityTypeConfiguration<PacoteModeloItem>
+{
+    public void Configure(EntityTypeBuilder<PacoteModeloItem> b)
+    {
+        b.HasOne(i => i.ItemCatalogo).WithMany().HasForeignKey(i => i.ItemCatalogoId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasIndex(i => new { i.TenantId, i.PacoteModeloId, i.ItemCatalogoId })
+            .IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
+public class PacoteConfig : IEntityTypeConfiguration<Pacote>
+{
+    public void Configure(EntityTypeBuilder<Pacote> b)
+    {
+        b.Property(p => p.Nome).HasMaxLength(120).IsRequired();
+        b.Property(p => p.PrecoPorCliente).HasPrecision(18, 2);
+        b.Property(p => p.Recorrencia).HasConversion<int>().IsRequired();
+        b.Property(p => p.Status).HasConversion<int>().IsRequired();
+        b.Ignore(p => p.EhRecorrente);
+        b.Ignore(p => p.ValorPorAtendimento);
+        b.Ignore(p => p.Itens);
+        b.Ignore(p => p.Clientes);
+        b.HasOne(p => p.PacoteModelo).WithMany().HasForeignKey(p => p.PacoteModeloId)
+            .OnDelete(DeleteBehavior.SetNull);
+        b.HasMany<PacoteItem>().WithOne(i => i.Pacote)
+            .HasForeignKey(i => i.PacoteId).OnDelete(DeleteBehavior.Cascade);
+        b.HasMany<PacoteCliente>().WithOne(c => c.Pacote)
+            .HasForeignKey(c => c.PacoteId).OnDelete(DeleteBehavior.Cascade);
+        // A varredura diária do job: quem está ativo e vence por aí.
+        b.HasIndex(p => new { p.TenantId, p.Status, p.FimDoCicloAtual });
+    }
+}
+
+public class PacoteItemConfig : IEntityTypeConfiguration<PacoteItem>
+{
+    public void Configure(EntityTypeBuilder<PacoteItem> b)
+    {
+        b.HasOne(i => i.ItemCatalogo).WithMany().HasForeignKey(i => i.ItemCatalogoId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasIndex(i => new { i.TenantId, i.PacoteId, i.ItemCatalogoId })
+            .IsUnique().HasFilter(Indices.SomenteAtivos);
+    }
+}
+
+public class PacoteClienteConfig : IEntityTypeConfiguration<PacoteCliente>
+{
+    public void Configure(EntityTypeBuilder<PacoteCliente> b)
+    {
+        b.Property(c => c.DiaDaSemana).HasConversion<int?>();
+        b.Ignore(c => c.Ciclos);
+        b.HasOne(c => c.Cliente).WithMany().HasForeignKey(c => c.ClienteId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.HasOne(c => c.ResponsavelPreferido).WithMany()
+            .HasForeignKey(c => c.ResponsavelPreferidoId).OnDelete(DeleteBehavior.SetNull);
+        b.HasMany<CicloDoCliente>().WithOne(x => x.PacoteCliente)
+            .HasForeignKey(x => x.PacoteClienteId).OnDelete(DeleteBehavior.Cascade);
+        // Um cliente num pacote só: duas bolsas de sessões para a mesma pessoa não teriam
+        // como decidir de qual sai o atendimento de hoje. O índice é parcial nos ativos
+        // porque quem saiu de um pacote pode entrar em outro.
+        b.HasIndex(c => new { c.TenantId, c.ClienteId })
+            .IsUnique().HasFilter("excluido = false AND ativo = true");
+        b.HasIndex(c => new { c.TenantId, c.PacoteId });
+    }
+}
+
+public class CicloDoClienteConfig : IEntityTypeConfiguration<CicloDoCliente>
+{
+    public void Configure(EntityTypeBuilder<CicloDoCliente> b)
+    {
+        b.Property(c => c.EstornoValor).HasPrecision(18, 2);
+        b.Ignore(c => c.Total);
+        b.Ignore(c => c.Disponivel);
+        // Um ciclo por número, por cliente: dois saldos do mesmo ciclo discordariam.
+        b.HasIndex(c => new { c.TenantId, c.PacoteClienteId, c.Ciclo })
+            .IsUnique().HasFilter(Indices.SomenteAtivos);
     }
 }
