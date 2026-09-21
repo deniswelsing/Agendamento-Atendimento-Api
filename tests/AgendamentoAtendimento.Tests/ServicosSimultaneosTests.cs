@@ -160,6 +160,22 @@ public class ServicosSimultaneosTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_mesma_pessoa_faz_os_dois_servicos_um_depois_do_outro()
+    {
+        // O que a flag decide é só se os serviços acontecem juntos. Um atendimento com
+        // dois serviços da mesma pessoa continua valendo: ela faz um e depois o outro.
+        var dia = await DiaAsync(quem: new long?[] { AnaId, AnaId });
+
+        Assert.NotEmpty(dia.Livres);
+        Assert.All(dia.Livres, slot =>
+        {
+            Assert.Equal(AnaId, slot.Atribuicoes[0].ResponsavelId);
+            Assert.Equal(AnaId, slot.Atribuicoes[1].ResponsavelId);
+            Assert.Equal(slot.Atribuicoes[0].Fim, slot.Atribuicoes[1].Inicio);
+        });
+    }
+
+    [Fact]
     public async Task A_mesma_pessoa_nos_dois_ao_mesmo_tempo_nao_tem_encaixe()
     {
         // Ela estaria em dois lugares na mesma hora. O POST recusa com
