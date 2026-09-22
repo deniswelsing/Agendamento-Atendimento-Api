@@ -314,13 +314,10 @@ public class VendasController : ControllerBaseApi
         var ids = req.Itens.Select(i => i.ItemId).Distinct().ToList();
         var catalogo = await _db.ItensCatalogo.Where(i => ids.Contains(i.Id)).ToListAsync(ct);
 
-        // Quem prestou cada serviço no atendimento. É daqui que sai a comissão: pagar
-        // tudo a quem abriu a venda daria o dinheiro à pessoa errada quando dois
-        // funcionários atenderam o mesmo cliente.
-        var quemPrestou = agendamento?.Itens
-            .Where(i => (i.ResponsavelId ?? agendamento.ResponsavelId) is not null)
-            .GroupBy(i => i.ItemCatalogoId)
-            .ToDictionary(g => g.Key, g => (g.First().ResponsavelId ?? agendamento.ResponsavelId)!.Value);
+        // Quem prestou cada serviço no atendimento, unidade a unidade. É daqui que sai a
+        // comissão: pagar tudo a quem abriu a venda daria o dinheiro à pessoa errada
+        // quando dois funcionários atenderam o mesmo cliente.
+        var quemPrestou = VendaService.QuemPrestouPorItem(agendamento);
 
         foreach (var pedido in req.Itens)
         {
@@ -340,31 +337,79 @@ public class VendasController : ControllerBaseApi
                     $"Estoque insuficiente de {item.Nome}: {estoque} disponível(is).", "ESTOQUE");
             }
 
-            venda.Itens.Add(new VendaItem
+            // O pedido manda quem leva a comissão, e aí é uma linha só. Sem isso, a linha
+            // se divide entre quem prestou: o mesmo serviço pode ter sido prestado por
+            // duas pessoas no mesmo atendimento, e cada uma recebe pelo que fez.
+            var partes = pedido.VendedorId is not null
+                ? new List<(long? Quem, decimal Quantidade)> { (pedido.VendedorId, pedido.Quantidade) }
+                : VendaService.DividirEntreQuemPrestou(
+                    quemPrestou.TryGetValue(item.Id, out var fila) ? fila : null,
+                    pedido.Quantidade);
+
+            for (var indiceDaParte = 0; indiceDaParte < partes.Count; indiceDaParte++)
             {
-                ItemCatalogoId = item.Id,
-                Tipo = item.Tipo,
-                Nome = item.Nome,
-                Quantidade = pedido.Quantidade,
-                // O preço do catálogo vale, salvo quando quem tem permissão manda outro.
-                PrecoUnitario = pedido.PrecoUnitario ?? item.Preco,
-                DescontoValor = pedido.DescontoValor,
-                TaxaPercentual = item.TaxaPercentual,
-                // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
-                // foi vendido nem o que foi prometido a quem atendeu.
-                ComissaoPercentual = item.ComissaoPercentual,
-                // Quem o pedido mandou; senão, quem prestou o serviço no atendimento.
-                // Nulo cai no vendedor da venda na hora de somar.
-                VendedorId = pedido.VendedorId
-                    ?? (quemPrestou is not null && quemPrestou.TryGetValue(item.Id, out var quem)
-                        ? quem
-                        : null),
-            });
+                venda.Itens.Add(new VendaItem
+                {
+                    ItemCatalogoId = item.Id,
+                    Tipo = item.Tipo,
+                    Nome = item.Nome,
+                    Quantidade = partes[indiceDaParte].Quantidade,
+                    // O preço do catálogo vale, salvo quando quem tem permissão manda outro.
+                    PrecoUnitario = pedido.PrecoUnitario ?? item.Preco,
+                    // O desconto pedido é da linha inteira: dividida, ele acompanha as
+                    // partes na proporção das unidades, e a última leva o resto para a
+                    // soma bater no centavo.
+                    DescontoValor = DescontoDaParte(
+                        pedido.DescontoValor, pedido.Quantidade, partes, indiceDaParte),
+                    TaxaPercentual = item.TaxaPercentual,
+                    // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
+                    // foi vendido nem o que foi prometido a quem atendeu.
+                    ComissaoPercentual = item.ComissaoPercentual,
+                    // Nulo cai no vendedor da venda na hora de somar.
+                    VendedorId = partes[indiceDaParte].Quem,
+                });
+            }
         }
 
         venda.DescontoGeral = req.DescontoGeral;
         venda.Observacao = req.Observacao;
         _vendas.RecalcularTotais(venda);
+    }
+
+    /// <summary>
+    /// O desconto de uma parte da linha dividida: proporcional às unidades dela, com a
+    /// última levando o resto — assim a soma das partes é exatamente o desconto pedido.
+    /// </summary>
+    private static decimal DescontoDaParte(
+        decimal descontoDaLinha,
+        decimal quantidadeDaLinha,
+        List<(long? Quem, decimal Quantidade)> partes,
+        int indice)
+    {
+        if (partes.Count == 1)
+        {
+            return descontoDaLinha;
+        }
+
+        if (descontoDaLinha == 0m || quantidadeDaLinha <= 0m)
+        {
+            return 0m;
+        }
+
+        if (indice < partes.Count - 1)
+        {
+            return decimal.Round(
+                descontoDaLinha * partes[indice].Quantidade / quantidadeDaLinha, 2,
+                MidpointRounding.AwayFromZero);
+        }
+
+        var dasOutras = partes
+            .Take(partes.Count - 1)
+            .Sum(p => decimal.Round(
+                descontoDaLinha * p.Quantidade / quantidadeDaLinha, 2,
+                MidpointRounding.AwayFromZero));
+
+        return descontoDaLinha - dasOutras;
     }
 
     private Task<Venda?> CarregarAsync(long id, CancellationToken ct) =>

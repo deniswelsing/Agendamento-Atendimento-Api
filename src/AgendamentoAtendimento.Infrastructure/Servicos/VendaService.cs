@@ -1,3 +1,4 @@
+using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using Microsoft.EntityFrameworkCore;
@@ -13,6 +14,94 @@ public class VendaService
     private readonly AppDbContext _db;
 
     public VendaService(AppDbContext db) => _db = db;
+
+    /// <summary>
+    /// Quem prestou cada serviço do atendimento, unidade a unidade, na ordem em que foram
+    /// prestados.
+    ///
+    /// Uma fila por item do catálogo, e não uma pessoa por item: o mesmo serviço pode
+    /// aparecer duas vezes no atendimento com pessoas diferentes — a Ana dá um banho, o
+    /// Bruno dá o outro —, e cada uma recebe pelo que fez. Guardar uma pessoa por item
+    /// pagaria as duas unidades para a primeira.
+    /// </summary>
+    /// <returns>Item do catálogo → as pessoas, uma entrada por unidade prestada.</returns>
+    public static Dictionary<long, Queue<long>> QuemPrestouPorItem(Agendamento? agendamento)
+    {
+        var porItem = new Dictionary<long, Queue<long>>();
+        if (agendamento is null)
+        {
+            return porItem;
+        }
+
+        foreach (var item in agendamento.Itens.OrderBy(i => i.Ordem).ThenBy(i => i.Id))
+        {
+            // Serviço sem pessoa própria segue quem responde pelo atendimento; sem os
+            // dois, não há a quem creditar, e a unidade fica sem dono.
+            var quem = item.ResponsavelId ?? agendamento.ResponsavelId;
+            if (quem is not > 0)
+            {
+                continue;
+            }
+
+            if (!porItem.TryGetValue(item.ItemCatalogoId, out var fila))
+            {
+                porItem[item.ItemCatalogoId] = fila = new Queue<long>();
+            }
+
+            for (var unidade = 0; unidade < Math.Max(1, item.Quantidade); unidade++)
+            {
+                fila.Enqueue(quem.Value);
+            }
+        }
+
+        return porItem;
+    }
+
+    /// <summary>
+    /// Como dividir uma linha da venda entre quem prestou: uma parte por pessoa, na ordem
+    /// da fila, com o que sobrar sem dono (cai no vendedor da venda na hora de somar).
+    /// </summary>
+    public static List<(long? Quem, decimal Quantidade)> DividirEntreQuemPrestou(
+        Queue<long>? fila, decimal quantidade)
+    {
+        var partes = new List<(long? Quem, decimal Quantidade)>();
+        var restante = quantidade;
+
+        while (restante >= 1m && fila is { Count: > 0 })
+        {
+            var quem = fila.Dequeue();
+            var unidades = 1m;
+            // Junta as unidades seguidas da mesma pessoa numa linha só: quebrar em uma
+            // linha por unidade encheria a venda de repetição sem dizer nada a mais.
+            while (restante - unidades >= 1m && fila.Count > 0 && fila.Peek() == quem)
+            {
+                fila.Dequeue();
+                unidades++;
+            }
+
+            partes.Add((quem, unidades));
+            restante -= unidades;
+        }
+
+        if (restante > 0m)
+        {
+            if (restante < 1m && partes.Count > 0)
+            {
+                // Meia unidade não muda quem prestou: a fração fica com a última pessoa
+                // da divisão, em vez de virar uma linha órfã sem comissão.
+                var ultima = partes[^1];
+                partes[^1] = (ultima.Quem, ultima.Quantidade + restante);
+            }
+            else
+            {
+                // Unidade inteira que o atendimento não cobre fica sem dono: creditar
+                // quem prestou o que ela não prestou é pagar a mais.
+                partes.Add((null, restante));
+            }
+        }
+
+        return partes;
+    }
 
     public void RecalcularTotais(Venda venda)
     {

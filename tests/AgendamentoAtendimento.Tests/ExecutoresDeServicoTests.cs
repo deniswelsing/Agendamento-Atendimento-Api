@@ -362,6 +362,108 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
 }
 
 /// <summary>
+/// Da agenda para a venda: quem prestou cada serviço vira quem leva a comissão daquela
+/// linha. O mesmo serviço prestado por duas pessoas vira duas linhas — uma para cada.
+/// </summary>
+public class ComissaoDaAgendaParaAVendaTests
+{
+    private static Agendamento ComItens(params (long ItemId, long? Quem, int Quantidade)[] itens)
+    {
+        var agendamento = new Agendamento
+        {
+            TenantId = 1, ClienteId = 1, ResponsavelId = 9,
+            Inicio = DateTimeOffset.UtcNow, Fim = DateTimeOffset.UtcNow.AddHours(1),
+        };
+
+        var ordem = 0;
+        foreach (var item in itens)
+        {
+            agendamento.Itens.Add(new AgendamentoItem
+            {
+                TenantId = 1, ItemCatalogoId = item.ItemId, Nome = "Serviço " + item.ItemId,
+                DuracaoMinutos = 30, Quantidade = item.Quantidade, ResponsavelId = item.Quem,
+                Ordem = ordem++,
+            });
+        }
+
+        return agendamento;
+    }
+
+    [Fact]
+    public void Cada_servico_leva_quem_o_prestou()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1), (2, 3, 1)));
+
+        Assert.Equal(2, fila[1].Peek());
+        Assert.Equal(3, fila[2].Peek());
+    }
+
+    [Fact]
+    public void Servico_sem_pessoa_fica_com_quem_responde_pelo_atendimento()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, null, 1)));
+
+        Assert.Equal(9, fila[1].Peek());
+    }
+
+    [Fact]
+    public void O_mesmo_servico_com_duas_pessoas_vira_duas_linhas()
+    {
+        // A Ana dá um banho, o Bruno dá o outro: uma linha para cada, e não duas
+        // unidades no nome da primeira.
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1), (1, 3, 1)));
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 2m);
+
+        Assert.Equal(2, partes.Count);
+        Assert.Equal((2L, 1m), (partes[0].Quem, partes[0].Quantidade));
+        Assert.Equal((3L, 1m), (partes[1].Quem, partes[1].Quantidade));
+    }
+
+    [Fact]
+    public void Unidades_seguidas_da_mesma_pessoa_ficam_numa_linha_so()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 2)));
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 2m);
+
+        Assert.Equal((2L, 2m), (Assert.Single(partes).Quem, partes[0].Quantidade));
+    }
+
+    [Fact]
+    public void O_que_a_agenda_nao_cobre_fica_sem_dono()
+    {
+        // Vendeu três, o atendimento tinha um: o resto cai no vendedor da venda na hora
+        // de somar, em vez de creditar quem prestou o que não prestou.
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1)));
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 3m);
+
+        Assert.Equal(2, partes.Count);
+        Assert.Equal((2L, 1m), (partes[0].Quem, partes[0].Quantidade));
+        Assert.Null(partes[1].Quem);
+        Assert.Equal(2m, partes[1].Quantidade);
+    }
+
+    [Fact]
+    public void Meia_unidade_fica_com_quem_prestou_a_outra_metade()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1)));
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 1.5m);
+
+        var parte = Assert.Single(partes);
+        Assert.Equal(2L, parte.Quem);
+        Assert.Equal(1.5m, parte.Quantidade);
+    }
+
+    [Fact]
+    public void Sem_atendimento_a_venda_nao_divide_nada()
+    {
+        Assert.Empty(VendaService.QuemPrestouPorItem(null));
+        var parte = Assert.Single(VendaService.DividirEntreQuemPrestou(null, 2m));
+        Assert.Null(parte.Quem);
+        Assert.Equal(2m, parte.Quantidade);
+    }
+}
+
+/// <summary>
 /// A comissão segue quem prestou o serviço, não quem abriu a venda. Com dois
 /// funcionários no mesmo atendimento, somar tudo num nome só pagaria a pessoa errada.
 /// </summary>
