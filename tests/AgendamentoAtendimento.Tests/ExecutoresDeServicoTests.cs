@@ -461,6 +461,60 @@ public class ComissaoDaAgendaParaAVendaTests
         Assert.Null(parte.Quem);
         Assert.Equal(2m, parte.Quantidade);
     }
+
+    [Fact]
+    public void Salvar_de_novo_nao_passa_a_sobra_para_quem_ja_tem_a_sua_linha()
+    {
+        // O atendimento tinha um banho da Ana; a venda cobra três. Salva de novo, a linha
+        // da Ana volta com dono e já gastou a vez dela: a sobra continua sem dono.
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1)));
+        VendaService.DescontarDaFila(fila[1], 2, 1m);
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 2m);
+
+        var parte = Assert.Single(partes);
+        Assert.Null(parte.Quem);
+        Assert.Equal(2m, parte.Quantidade);
+    }
+
+    [Fact]
+    public void Linha_de_outra_pessoa_nao_gasta_a_vez_de_quem_prestou()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1), (1, 3, 1)));
+        VendaService.DescontarDaFila(fila[1], 3, 1m);
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 1m);
+
+        Assert.Equal((2L, 1m), (Assert.Single(partes).Quem, partes[0].Quantidade));
+    }
+
+    [Fact]
+    public void Linha_de_menos_de_uma_unidade_fica_com_quem_prestou()
+    {
+        var fila = VendaService.QuemPrestouPorItem(ComItens((1, 2, 1)));
+        var partes = VendaService.DividirEntreQuemPrestou(fila[1], 0.5m);
+
+        var parte = Assert.Single(partes);
+        Assert.Equal(2L, parte.Quem);
+        Assert.Equal(0.5m, parte.Quantidade);
+    }
+
+    [Fact]
+    public void Desconto_dividido_nunca_fica_negativo_e_soma_o_pedido()
+    {
+        // Quatro partes e dois centavos: arredondar parte a parte daria 0,01 às três
+        // primeiras e -0,01 à última.
+        var descontos = VendaService.DividirDesconto(0.02m, new[] { 1m, 1m, 1m, 1m });
+
+        Assert.All(descontos, d => Assert.True(d >= 0m));
+        Assert.Equal(0.02m, descontos.Sum());
+    }
+
+    [Fact]
+    public void Desconto_acompanha_as_unidades_de_cada_parte()
+    {
+        var descontos = VendaService.DividirDesconto(10m, new[] { 1m, 3m });
+
+        Assert.Equal(new[] { 2.50m, 7.50m }, descontos);
+    }
 }
 
 /// <summary>

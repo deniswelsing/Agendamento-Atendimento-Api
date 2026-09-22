@@ -319,6 +319,17 @@ public class VendasController : ControllerBaseApi
         // quando dois funcionários atenderam o mesmo cliente.
         var quemPrestou = VendaService.QuemPrestouPorItem(agendamento);
 
+        // Linha que já chega com dono (a venda sendo salva de novo, ou alguém escolheu
+        // quem leva) já gastou a vez dessa pessoa na fila: só o que sobra se divide.
+        foreach (var pedido in req.Itens)
+        {
+            if (pedido.VendedorId is { } dono && pedido.Quantidade > 0 &&
+                quemPrestou.TryGetValue(pedido.ItemId, out var filaDoItem))
+            {
+                VendaService.DescontarDaFila(filaDoItem, dono, pedido.Quantidade);
+            }
+        }
+
         foreach (var pedido in req.Itens)
         {
             var item = catalogo.FirstOrDefault(i => i.Id == pedido.ItemId)
@@ -346,6 +357,11 @@ public class VendasController : ControllerBaseApi
                     quemPrestou.TryGetValue(item.Id, out var fila) ? fila : null,
                     pedido.Quantidade);
 
+            // O desconto pedido é da linha inteira: dividida, ele acompanha as partes na
+            // proporção das unidades, e a soma bate no centavo.
+            var descontos = VendaService.DividirDesconto(
+                pedido.DescontoValor, partes.Select(p => p.Quantidade).ToList());
+
             for (var indiceDaParte = 0; indiceDaParte < partes.Count; indiceDaParte++)
             {
                 venda.Itens.Add(new VendaItem
@@ -356,11 +372,7 @@ public class VendasController : ControllerBaseApi
                     Quantidade = partes[indiceDaParte].Quantidade,
                     // O preço do catálogo vale, salvo quando quem tem permissão manda outro.
                     PrecoUnitario = pedido.PrecoUnitario ?? item.Preco,
-                    // O desconto pedido é da linha inteira: dividida, ele acompanha as
-                    // partes na proporção das unidades, e a última leva o resto para a
-                    // soma bater no centavo.
-                    DescontoValor = DescontoDaParte(
-                        pedido.DescontoValor, pedido.Quantidade, partes, indiceDaParte),
+                    DescontoValor = descontos[indiceDaParte],
                     TaxaPercentual = item.TaxaPercentual,
                     // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
                     // foi vendido nem o que foi prometido a quem atendeu.
@@ -374,42 +386,6 @@ public class VendasController : ControllerBaseApi
         venda.DescontoGeral = req.DescontoGeral;
         venda.Observacao = req.Observacao;
         _vendas.RecalcularTotais(venda);
-    }
-
-    /// <summary>
-    /// O desconto de uma parte da linha dividida: proporcional às unidades dela, com a
-    /// última levando o resto — assim a soma das partes é exatamente o desconto pedido.
-    /// </summary>
-    private static decimal DescontoDaParte(
-        decimal descontoDaLinha,
-        decimal quantidadeDaLinha,
-        List<(long? Quem, decimal Quantidade)> partes,
-        int indice)
-    {
-        if (partes.Count == 1)
-        {
-            return descontoDaLinha;
-        }
-
-        if (descontoDaLinha == 0m || quantidadeDaLinha <= 0m)
-        {
-            return 0m;
-        }
-
-        if (indice < partes.Count - 1)
-        {
-            return decimal.Round(
-                descontoDaLinha * partes[indice].Quantidade / quantidadeDaLinha, 2,
-                MidpointRounding.AwayFromZero);
-        }
-
-        var dasOutras = partes
-            .Take(partes.Count - 1)
-            .Sum(p => decimal.Round(
-                descontoDaLinha * p.Quantidade / quantidadeDaLinha, 2,
-                MidpointRounding.AwayFromZero));
-
-        return descontoDaLinha - dasOutras;
     }
 
     private Task<Venda?> CarregarAsync(long id, CancellationToken ct) =>

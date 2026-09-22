@@ -92,6 +92,12 @@ public class VendaService
                 var ultima = partes[^1];
                 partes[^1] = (ultima.Quem, ultima.Quantidade + restante);
             }
+            else if (restante < 1m && fila is { Count: > 0 })
+            {
+                // A linha inteira é menos de uma unidade (meia sessão, por exemplo): ainda
+                // assim foi alguém do atendimento que prestou, e é dele a comissão.
+                partes.Add((fila.Dequeue(), restante));
+            }
             else
             {
                 // Unidade inteira que o atendimento não cobre fica sem dono: creditar
@@ -101,6 +107,83 @@ public class VendaService
         }
 
         return partes;
+    }
+
+    /// <summary>
+    /// Tira da fila as unidades que uma linha com dono já cobre.
+    ///
+    /// Quando a venda é salva de novo, as linhas que já foram divididas voltam com o seu
+    /// dono no pedido. Sem descontar essas unidades, a fila continuaria inteira e a linha
+    /// sem dono tomaria de novo a vez de quem já tem a sua — a cada salvamento, mais
+    /// unidades no nome da mesma pessoa.
+    /// </summary>
+    public static void DescontarDaFila(Queue<long>? fila, long quem, decimal quantidade)
+    {
+        if (fila is not { Count: > 0 })
+        {
+            return;
+        }
+
+        // Uma unidade da fila para cada unidade inteira da linha; uma linha só com
+        // fração ainda consome a vez de quem a prestou.
+        var aDescontar = Math.Max(1, (int)decimal.Floor(quantidade));
+        var restantes = new List<long>(fila.Count);
+        foreach (var pessoa in fila)
+        {
+            if (aDescontar > 0 && pessoa == quem)
+            {
+                aDescontar--;
+                continue;
+            }
+
+            restantes.Add(pessoa);
+        }
+
+        fila.Clear();
+        foreach (var pessoa in restantes)
+        {
+            fila.Enqueue(pessoa);
+        }
+    }
+
+    /// <summary>
+    /// O desconto de cada parte da linha dividida, proporcional às unidades dela.
+    ///
+    /// Arredonda o acumulado, e não cada parte: a parte é a diferença entre dois
+    /// acumulados arredondados, então nunca fica negativa e a soma das partes é
+    /// exatamente o desconto pedido.
+    /// </summary>
+    public static List<decimal> DividirDesconto(
+        decimal descontoDaLinha, IReadOnlyList<decimal> quantidades)
+    {
+        var descontos = new List<decimal>(quantidades.Count);
+        if (quantidades.Count == 1)
+        {
+            descontos.Add(descontoDaLinha);
+            return descontos;
+        }
+
+        var total = quantidades.Sum();
+        if (descontoDaLinha == 0m || total <= 0m)
+        {
+            descontos.AddRange(quantidades.Select(_ => 0m));
+            return descontos;
+        }
+
+        var acumulado = 0m;
+        var anterior = 0m;
+        for (var i = 0; i < quantidades.Count; i++)
+        {
+            acumulado += quantidades[i];
+            var ate = i == quantidades.Count - 1
+                ? descontoDaLinha
+                : decimal.Round(
+                    descontoDaLinha * acumulado / total, 2, MidpointRounding.AwayFromZero);
+            descontos.Add(ate - anterior);
+            anterior = ate;
+        }
+
+        return descontos;
     }
 
     public void RecalcularTotais(Venda venda)
