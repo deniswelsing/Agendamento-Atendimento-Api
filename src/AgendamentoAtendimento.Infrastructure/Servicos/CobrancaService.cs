@@ -67,10 +67,13 @@ public class CobrancaService
             throw new ArgumentException("A chave de idempotência é obrigatória.", nameof(chaveIdempotencia));
         }
 
+        // A chave é gravada sem espaços nas pontas; procurar sem o mesmo corte deixava
+        // " toque-1" passar pela idempotência e esbarrar no índice único ao gravar.
+        var chave = chaveIdempotencia.Trim();
         var existente = await _db.Cobrancas
             .Include(c => c.FormaPagamento)
             .Include(c => c.Pagamento)
-            .FirstOrDefaultAsync(c => c.ChaveIdempotencia == chaveIdempotencia, ct);
+            .FirstOrDefaultAsync(c => c.ChaveIdempotencia == chave, ct);
 
         if (existente is not null)
         {
@@ -91,9 +94,26 @@ public class CobrancaService
 
         // Duas cobranças abertas na mesma venda cobrariam o cliente duas vezes pelo mesmo
         // saldo. Só uma de cada vez.
+        //
+        // A que passou do prazo não conta: ela nunca mais vira pagamento (concluir e
+        // cancelar recusam cobrança expirada), e contá-la prendia a venda para sempre
+        // quando o app caía no meio e ninguém rodava a expiração.
+        var agora = DateTimeOffset.UtcNow;
+        var vencidas = await _db.Cobrancas
+            .Where(c => c.VendaId == venda.Id
+                        && (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
+                        && c.ExpiraEm <= agora)
+            .ToListAsync(ct);
+        foreach (var vencida in vencidas)
+        {
+            vencida.Status = StatusCobranca.Expirada;
+            vencida.RespondidaEm = agora;
+        }
+
         var jaAberta = await _db.Cobrancas.AnyAsync(
             c => c.VendaId == venda.Id
-                 && (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento), ct);
+                 && (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
+                 && c.ExpiraEm > agora, ct);
         if (jaAberta)
         {
             throw new InvalidOperationException(
@@ -106,7 +126,7 @@ public class CobrancaService
         var cobranca = new Cobranca
         {
             VendaId = venda.Id,
-            ChaveIdempotencia = chaveIdempotencia.Trim(),
+            ChaveIdempotencia = chave,
             Meio = meio,
             Status = StatusCobranca.Criada,
             FormaPagamentoId = forma.Id,

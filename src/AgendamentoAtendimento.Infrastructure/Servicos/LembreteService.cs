@@ -1,5 +1,6 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -53,11 +54,13 @@ public class LembreteService
 {
     private readonly AppDbContext _db;
     private readonly IEnviadorDeLembrete _enviador;
+    private readonly RelogioDoTenant _relogio;
 
-    public LembreteService(AppDbContext db, IEnviadorDeLembrete enviador)
+    public LembreteService(AppDbContext db, IEnviadorDeLembrete enviador, RelogioDoTenant relogio)
     {
         _db = db;
         _enviador = enviador;
+        _relogio = relogio;
     }
 
     /// <summary>A configuração da empresa, ou o padrão desligado quando não há nenhuma.</summary>
@@ -118,6 +121,9 @@ public class LembreteService
             });
         }
 
+        // Conta de instantes: o início já é o instante real do atendimento, então "N horas
+        // antes" é N horas antes no relógio de qualquer um — 08:00 de São Paulo com 24h
+        // sai às 08:00 da véspera, lá.
         var horaDoLembrete = agendamento.Inicio.AddHours(-config.HorasDeAntecedencia);
 
         // Marcar para daqui a uma hora com lembrete de 24h não gera um lembrete no
@@ -236,12 +242,14 @@ public class LembreteService
         agendamento.Cliente is { AceitaEmail: true, Email: { } email }
         && !string.IsNullOrWhiteSpace(email);
 
-    private static MensagemDeLembrete Montar(
+    private MensagemDeLembrete Montar(
         LembreteDeAgendamento lembrete,
         Agendamento agendamento,
         ConfiguracaoDeLembrete config)
     {
-        var quando = agendamento.Inicio.ToString("dd/MM 'às' HH:mm");
+        // A hora que o cliente combinou é a da empresa. Escrever o instante em UTC
+        // mandaria "às 11:00" para quem marcou às 08:00.
+        var quando = _relogio.NoFuso(agendamento.Inicio).ToString("dd/MM 'às' HH:mm");
         var nome = agendamento.Cliente?.Nome ?? "Olá";
 
         var assunto = lembrete.Tipo == TipoDeLembrete.Confirmacao

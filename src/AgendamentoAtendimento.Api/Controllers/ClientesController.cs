@@ -46,15 +46,19 @@ public class ClientesController : ControllerBaseApi
 
         if (!string.IsNullOrWhiteSpace(busca))
         {
-            var termo = $"%{busca.Trim()}%";
-            var digitos = new string(busca.Where(char.IsDigit).ToArray());
+            var termo = BuscaTextual.PadraoContem(busca);
+            const string escape = BuscaTextual.Escape;
+            // Só vai ao documento quando o texto É um documento: tirar os dígitos de
+            // qualquer busca fazia um nome com um número trazer quem tem aquele dígito
+            // no CPF/CNPJ.
+            var digitos = BuscaTextual.DigitosDeDocumento(busca);
             consulta = consulta.Where(c =>
-                EF.Functions.ILike(c.Nome ?? string.Empty, termo) ||
-                EF.Functions.ILike(c.Sobrenome ?? string.Empty, termo) ||
-                EF.Functions.ILike(c.RazaoSocial ?? string.Empty, termo) ||
-                EF.Functions.ILike(c.NomeFantasia ?? string.Empty, termo) ||
-                EF.Functions.ILike(c.Email ?? string.Empty, termo) ||
-                (digitos != string.Empty && c.Documento != null && c.Documento.Contains(digitos)));
+                EF.Functions.ILike(c.Nome ?? string.Empty, termo, escape) ||
+                EF.Functions.ILike(c.Sobrenome ?? string.Empty, termo, escape) ||
+                EF.Functions.ILike(c.RazaoSocial ?? string.Empty, termo, escape) ||
+                EF.Functions.ILike(c.NomeFantasia ?? string.Empty, termo, escape) ||
+                EF.Functions.ILike(c.Email ?? string.Empty, termo, escape) ||
+                (digitos != null && c.Documento != null && c.Documento.Contains(digitos)));
         }
 
         var total = await consulta.CountAsync(ct);

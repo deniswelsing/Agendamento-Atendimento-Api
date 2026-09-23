@@ -1,4 +1,5 @@
 using AgendamentoAtendimento.Domain.Agenda;
+using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
@@ -94,6 +95,7 @@ public class DisponibilidadeService
 {
     private readonly AppDbContext _db;
     private readonly IContextoAtual _contexto;
+    private readonly RelogioDoTenant _relogio;
 
     /// <summary>
     /// Lido uma vez por requisição: o modo não muda no meio de um cálculo, e perguntar a
@@ -101,10 +103,11 @@ public class DisponibilidadeService
     /// </summary>
     private ModoDeOcupacao? _modo;
 
-    public DisponibilidadeService(AppDbContext db, IContextoAtual contexto)
+    public DisponibilidadeService(AppDbContext db, IContextoAtual contexto, RelogioDoTenant relogio)
     {
         _db = db;
         _contexto = contexto;
+        _relogio = relogio;
     }
 
     /// <summary>A política de agenda da empresa: modo de ocupação e tetos diários.</summary>
@@ -206,9 +209,7 @@ public class DisponibilidadeService
     {
         var diaDaSemana = data.DayOfWeek;
 
-        var horarioEmpresa = await _db.HorariosFuncionamento
-            .AsNoTracking()
-            .FirstOrDefaultAsync(h => h.DiaDaSemana == diaDaSemana, ct);
+        var horarioEmpresa = await HorarioDaEmpresaAsync(diaDaSemana, ct);
 
         var excecaoEmpresa = await _db.ExcecoesHorarioFuncionamento
             .AsNoTracking()
@@ -402,9 +403,15 @@ public class DisponibilidadeService
         var livres = new List<SlotDisponivel>();
         var inicioDoDia = Maior(abertura.Value, TimeOnly.MinValue);
 
-        for (var t = inicioDoDia; AdicionarMinutos(t, duracaoTotal) <= fechamento.Value;
-             t = AdicionarMinutos(t, intervalo))
+        // A conta anda em minutos do dia, e não em TimeOnly: TimeOnly.AddMinutes dá a volta
+        // na meia-noite, e com fechamento perto dela (23:30, 23:59) "t + duração" voltava
+        // para a madrugada, continuava <= fechamento e o laço nunca terminava.
+        var minutoDeFechamento = (int)fechamento.Value.ToTimeSpan().TotalMinutes;
+        for (var minuto = (int)inicioDoDia.ToTimeSpan().TotalMinutes;
+             minuto + duracaoTotal <= minutoDeFechamento;
+             minuto += Math.Max(1, intervalo))
         {
+            var t = TimeOnly.FromTimeSpan(TimeSpan.FromMinutes(minuto));
             var atribuicoes = MontarCadeia(
                 sequencia, habilitados, t, data, PodeAtender, modoDeOcupacao,
                 (itemId, usuarioId, ini, fim) => itemId is { } id
@@ -431,8 +438,8 @@ public class DisponibilidadeService
         // A faixa corta no fim, e não na montagem da cadeia: é o mesmo dia, visto por
         // uma janela menor — e é o que deixa dizer "havia horário, mas não nessa faixa".
         var ordenados = todosDoDia
-            .Where(s => horaDe is not { } de || TimeOnly.FromDateTime(s.Inicio.UtcDateTime) >= de)
-            .Where(s => horaAte is not { } ate || TimeOnly.FromDateTime(s.Fim.UtcDateTime) <= ate)
+            .Where(s => horaDe is not { } de || _relogio.HoraLocal(s.Inicio) >= de)
+            .Where(s => horaAte is not { } ate || _relogio.HoraLocal(s.Fim) <= ate)
             .ToList();
 
         var soAFaixaCortou = ordenados.Count == 0 && todosDoDia.Count > 0;
@@ -481,7 +488,7 @@ public class DisponibilidadeService
     /// atendimento prende a pessoa do começo ao fim, e checar só a própria janela deixaria
     /// criar um agendamento que já nasce por cima de outro compromisso dela.
     /// </summary>
-    private static List<AtribuicaoDeServico>? MontarCadeia(
+    private List<AtribuicaoDeServico>? MontarCadeia(
         IReadOnlyList<(long? ItemCatalogoId, string Nome, int Duracao, int Etapa)> sequencia,
         IReadOnlyList<List<Usuario>> habilitados,
         TimeOnly inicio,
@@ -649,7 +656,8 @@ public class DisponibilidadeService
             fim = atendimentoFim ?? fim;
         }
 
-        var data = DateOnly.FromDateTime(inicio.UtcDateTime);
+        // O dia e a hora são os da empresa: é neles que o horário de funcionamento vale.
+        var data = _relogio.DataLocal(inicio);
 
         var quem = await _db.Usuarios.AsNoTracking()
             .FirstOrDefaultAsync(u => u.Id == usuarioId && u.Ativo && u.Atendente, ct);
@@ -670,8 +678,7 @@ public class DisponibilidadeService
         }
 
         var diaDaSemana = data.DayOfWeek;
-        var horarioEmpresa = await _db.HorariosFuncionamento.AsNoTracking()
-            .FirstOrDefaultAsync(h => h.DiaDaSemana == diaDaSemana, ct);
+        var horarioEmpresa = await HorarioDaEmpresaAsync(diaDaSemana, ct);
         var excecaoEmpresa = await _db.ExcecoesHorarioFuncionamento.AsNoTracking()
             .FirstOrDefaultAsync(e => e.Data == data, ct);
 
@@ -694,8 +701,8 @@ public class DisponibilidadeService
             return false;
         }
 
-        var de = TimeOnly.FromDateTime(inicio.UtcDateTime);
-        var ate = TimeOnly.FromDateTime(fim.UtcDateTime);
+        var de = _relogio.HoraLocal(inicio);
+        var ate = _relogio.HoraLocal(fim);
 
         if (de < Maior(abertura.Value, jornada.InicioEfetivo) || ate > Menor(fechamento.Value, jornada.FimEfetivo))
         {
@@ -885,7 +892,7 @@ public class DisponibilidadeService
         CancellationToken ct = default,
         IReadOnlyList<int>? etapasPorItem = null)
     {
-        var data = DateOnly.FromDateTime(inicio.UtcDateTime);
+        var data = _relogio.DataLocal(inicio);
         var dia = await ObterDiaAsync(
             data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId,
             null, etapasPorItem);
@@ -900,8 +907,8 @@ public class DisponibilidadeService
 
     private async Task<List<Agendamento>> AgendamentosDoDiaAsync(DateOnly data, CancellationToken ct)
     {
-        var inicioDia = Combinar(data, TimeOnly.MinValue);
-        var fimDia = inicioDia.AddDays(1);
+        var inicioDia = _relogio.InicioDoDia(data);
+        var fimDia = _relogio.FimDoDia(data);
         return await _db.Agendamentos
             .AsNoTracking()
             // Os itens vêm junto porque a ocupação pode ser por serviço: aí quem presta
@@ -928,10 +935,9 @@ public class DisponibilidadeService
             return atendentes;
         }
 
-        var executores = await _db.ExecutoresDeServico
-            .AsNoTracking()
+        var executores = (await TodosOsExecutoresAsync(ct))
             .Where(e => itensIds.Contains(e.ItemCatalogoId))
-            .ToListAsync(ct);
+            .ToList();
 
         if (executores.Count == 0)
         {
@@ -995,13 +1001,38 @@ public class DisponibilidadeService
         return livres;
     }
 
-    private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct) =>
-        await _db.Usuarios
+    private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct)
+    {
+        _atendentes ??= await _db.Usuarios
             .AsNoTracking()
             .Where(u => u.Ativo && u.Atendente && !u.ConvitePendente)
-            .Where(u => responsavelId == null || u.Id == responsavelId)
             .OrderBy(u => u.Nome)
             .ToListAsync(ct);
+
+        return _atendentes.Where(u => responsavelId == null || u.Id == responsavelId).ToList();
+    }
+
+    // ------------------------------------------------------------------------------
+    // A configuração da agenda (funcionamento, jornadas, quem presta o quê, turmas e o
+    // time) não muda no meio de uma requisição, e a grade a relia a cada dia calculado:
+    // uma semana, um mês ou as sugestões de 30 dias viravam centenas de consultas iguais.
+    // Fica lida uma vez por instância — o serviço é por requisição. O que muda dia a dia
+    // (agendamentos, exceções, ausências) continua sendo lido a cada dia.
+    // ------------------------------------------------------------------------------
+    private List<HorarioFuncionamento>? _funcionamento;
+    private List<HorarioStaff>? _jornadas;
+    private List<Usuario>? _atendentes;
+    private List<ExecutorDeServico>? _executores;
+    private Dictionary<long, int>? _capacidades;
+
+    private async Task<HorarioFuncionamento?> HorarioDaEmpresaAsync(DayOfWeek dia, CancellationToken ct)
+    {
+        _funcionamento ??= await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
+        return _funcionamento.FirstOrDefault(h => h.DiaDaSemana == dia);
+    }
+
+    private async Task<List<ExecutorDeServico>> TodosOsExecutoresAsync(CancellationToken ct) =>
+        _executores ??= await _db.ExecutoresDeServico.AsNoTracking().ToListAsync(ct);
 
     /// <summary>
     /// O turno vem junto: quando a pessoa segue escala, é dele que saem os horários, e
@@ -1021,7 +1052,7 @@ public class DisponibilidadeService
 
     /// <summary>Capacidade de cada serviço. 1 é atendimento individual.</summary>
     private async Task<Dictionary<long, int>> CapacidadesAsync(CancellationToken ct) =>
-        await _db.ItensCatalogo.AsNoTracking()
+        _capacidades ??= await _db.ItensCatalogo.AsNoTracking()
             .Where(i => i.CapacidadeTurma > 1)
             .ToDictionaryAsync(i => i.Id, i => i.CapacidadeTurma, ct);
 
@@ -1047,11 +1078,14 @@ public class DisponibilidadeService
         return contagem;
     }
 
-    private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct) =>
-        await _db.HorariosStaff.AsNoTracking()
+    private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct)
+    {
+        _jornadas ??= await _db.HorariosStaff.AsNoTracking()
             .Include(h => h.Turno)
-            .Where(h => h.DiaDaSemana == dia)
             .ToListAsync(ct);
+
+        return _jornadas.Where(h => h.DiaDaSemana == dia).ToList();
+    }
 
     private async Task<List<ExcecaoHorarioStaff>> AusenciasAsync(DateOnly data, CancellationToken ct) =>
         await _db.ExcecoesHorarioStaff.AsNoTracking().Where(e => e.Data == data).ToListAsync(ct);
@@ -1065,6 +1099,9 @@ public class DisponibilidadeService
 
     private static TimeOnly AdicionarMinutos(TimeOnly hora, int minutos) => hora.AddMinutes(minutos);
 
-    private static DateTimeOffset Combinar(DateOnly data, TimeOnly hora) =>
-        new(data.ToDateTime(hora), TimeSpan.Zero);
+    /// <summary>
+    /// A hora de parede da empresa naquele dia, como instante. A grade inteira pensa em
+    /// hora de parede — é o que está configurado — e só vira instante aqui.
+    /// </summary>
+    private DateTimeOffset Combinar(DateOnly data, TimeOnly hora) => _relogio.Instante(data, hora);
 }

@@ -134,7 +134,7 @@ public class ModoDeOcupacaoTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         // Serviço novo a cada modo: ele guarda o modo lido, como faz numa requisição.
-        return new DisponibilidadeService(_db, _contexto);
+        return new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
     }
 
     /// <summary>Quem a grade oferece para um serviço de 30 min começando naquela hora.</summary>
@@ -198,7 +198,7 @@ public class ModoDeOcupacaoTests : IAsyncLifetime
         tenant.ModoDeOcupacao = default;
         await _db.SaveChangesAsync();
 
-        var servico = new DisponibilidadeService(_db, _contexto);
+        var servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
         var dia = await servico.ObterDiaAsync(Segunda, 30, null, default, new[] { CorteId });
 
         Assert.Contains(CaioId, QuemPodeAs(dia, Em(8, 0)));

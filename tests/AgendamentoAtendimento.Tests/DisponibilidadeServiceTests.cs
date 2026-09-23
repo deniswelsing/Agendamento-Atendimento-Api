@@ -76,7 +76,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
     [Fact]
     public async Task Dia_fechado_na_empresa_nao_oferece_encaixe()
     {
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Domingo, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Domingo, 30);
 
         Assert.False(dia.Aberto);
         Assert.Empty(dia.Livres);
@@ -87,7 +87,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
     {
         // Empresa 08:00-12:00, Bruna 09:00-18:00, pausa 10:00-10:30, slots de 30 min.
         // Cabem: 09:00, 09:30, 10:30, 11:00, 11:30.
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         var horas = dia.Livres.Select(s => TimeOnly.FromDateTime(s.Inicio.UtcDateTime).ToString("HH:mm"));
         Assert.Equal(new[] { "09:00", "09:30", "10:30", "11:00", "11:30" }, horas);
@@ -96,7 +96,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
     [Fact]
     public async Task Pausa_da_empresa_bloqueia_o_encaixe_que_a_atravessa()
     {
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         Assert.DoesNotContain(dia.Livres, s =>
             TimeOnly.FromDateTime(s.Inicio.UtcDateTime) == new TimeOnly(10, 0));
@@ -106,7 +106,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
     public async Task Servico_longo_reduz_os_encaixes()
     {
         // Com 90 min só sobra 10:30 (10:30-12:00): as janelas antes esbarram na pausa.
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 90);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 90);
 
         var horas = dia.Livres.Select(s => TimeOnly.FromDateTime(s.Inicio.UtcDateTime).ToString("HH:mm"));
         Assert.Equal(new[] { "10:30" }, horas);
@@ -123,7 +123,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
         });
         await _db.SaveChangesAsync();
 
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         Assert.DoesNotContain(dia.Livres, s => s.Inicio == inicio);
         Assert.Equal(1, dia.TotalAgendamentos);
@@ -140,7 +140,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
         });
         await _db.SaveChangesAsync();
 
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         Assert.Contains(dia.Livres, s => s.Inicio == inicio);
     }
@@ -154,7 +154,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
         });
         await _db.SaveChangesAsync();
 
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         Assert.True(dia.Aberto);
         Assert.Empty(dia.Livres);
@@ -169,7 +169,7 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
         });
         await _db.SaveChangesAsync();
 
-        var dia = await new DisponibilidadeService(_db, _contexto).ObterDiaAsync(Segunda, 30);
+        var dia = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc).ObterDiaAsync(Segunda, 30);
 
         Assert.False(dia.Aberto);
         Assert.Equal("Feriado municipal", dia.MotivoFechado);
@@ -178,11 +178,44 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
     [Fact]
     public async Task Periodo_devolve_um_resumo_por_dia()
     {
-        var dias = await new DisponibilidadeService(_db, _contexto)
+        var dias = await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc)
             .ObterPeriodoAsync(Domingo, Segunda, 30);
 
         Assert.Equal(2, dias.Count);
         Assert.False(dias[0].Aberto);
         Assert.True(dias[1].Aberto);
+    }
+
+    /// <summary>
+    /// Empresa que fecha perto da meia-noite. `TimeOnly.AddMinutes` dá a volta no relógio:
+    /// 23:30 + 30 min vira 00:00, que é "<= 23:30", e a grade nunca parava de andar — a
+    /// requisição (inclusive a da página pública, sem token) girava para sempre.
+    /// </summary>
+    [Fact]
+    public async Task Fechamento_perto_da_meia_noite_nao_prende_a_grade_num_laco()
+    {
+        var terca = new DateOnly(2026, 9, 22);
+        _db.HorariosFuncionamento.Add(new HorarioFuncionamento
+        {
+            TenantId = 1, DiaDaSemana = DayOfWeek.Tuesday, Aberto = true,
+            Abertura = new TimeOnly(8, 0), Fechamento = new TimeOnly(23, 30),
+            IntervaloSlotMinutos = 30,
+        });
+        _db.HorariosStaff.Add(new HorarioStaff
+        {
+            TenantId = 1, UsuarioId = UsuarioId, DiaDaSemana = DayOfWeek.Tuesday,
+            Inicio = new TimeOnly(8, 0), Fim = new TimeOnly(23, 30), Trabalha = true,
+        });
+        await _db.SaveChangesAsync();
+
+        // Em outra thread e com prazo: o laço era síncrono, e uma regressão prenderia o
+        // próprio teste em vez de falhar.
+        var servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
+        var dia = await Task.Run(() => servico.ObterDiaAsync(terca, 30))
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(31, dia.Livres.Count);
+        Assert.Equal(new TimeOnly(23, 0), TimeOnly.FromDateTime(dia.Livres[^1].Inicio.UtcDateTime));
+        Assert.All(dia.Livres, s => Assert.True(s.Fim > s.Inicio));
     }
 }

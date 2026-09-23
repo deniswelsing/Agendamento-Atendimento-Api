@@ -42,17 +42,20 @@ public class PaginaPublicaService
     private readonly ContextoAtual _contexto;
     private readonly DisponibilidadeService _disponibilidade;
     private readonly AssinaturaService _assinaturas;
+    private readonly RelogioDoTenant _relogio;
 
     public PaginaPublicaService(
         AppDbContext db,
         ContextoAtual contexto,
         DisponibilidadeService disponibilidade,
-        AssinaturaService assinaturas)
+        AssinaturaService assinaturas,
+        RelogioDoTenant relogio)
     {
         _db = db;
         _contexto = contexto;
         _disponibilidade = disponibilidade;
         _assinaturas = assinaturas;
+        _relogio = relogio;
     }
 
     /// <summary>
@@ -115,13 +118,16 @@ public class PaginaPublicaService
     /// <summary>
     /// A faixa de datas que a página aceita. Antes do começo é antecedência de menos;
     /// depois do fim é janela de mais.
+    ///
+    /// As datas são as do calendário da empresa, que é o que o cliente vê na página:
+    /// às 22h de São Paulo "hoje" ainda é hoje, mesmo já sendo amanhã em UTC.
     /// </summary>
     public (DateOnly Primeira, DateOnly Ultima) JanelaPublica(
         ConfiguracaoPaginaPublica pagina, DateTimeOffset agora)
     {
         var comeca = agora.AddHours(pagina.AntecedenciaMinimaHoras);
-        var primeira = DateOnly.FromDateTime(comeca.UtcDateTime);
-        var ultima = DateOnly.FromDateTime(agora.UtcDateTime).AddDays(pagina.JanelaMaximaDias);
+        var primeira = _relogio.DataLocal(comeca);
+        var ultima = _relogio.DataLocal(agora).AddDays(pagina.JanelaMaximaDias);
         return (primeira, ultima > primeira ? ultima : primeira);
     }
 
@@ -224,6 +230,10 @@ public class PaginaPublicaService
                 "Informe seu telefone."), null);
         }
 
+        // O mesmo serviço duas vezes contaria a duração dobrada na grade e simples no
+        // agendamento gravado: a conta tem de ser uma só.
+        itensIds = itensIds.Distinct().ToList();
+
         var servicos = await ValidarServicosAsync(itensIds, ct);
         if (servicos is null)
         {
@@ -241,7 +251,7 @@ public class PaginaPublicaService
         }
 
         var (_, ultima) = JanelaPublica(pagina, agora);
-        if (DateOnly.FromDateTime(inicio.UtcDateTime) > ultima)
+        if (_relogio.DataLocal(inicio) > ultima)
         {
             return (new ResultadoPublico(false, RecusaPublica.ForaDaJanela,
                 $"A agenda online vai até {ultima:dd/MM/yyyy}."), null);
@@ -286,7 +296,11 @@ public class PaginaPublicaService
             CodigoPublico = CodigoDeAcesso.Gerar(),
         };
 
-        foreach (var servico in servicos)
+        // Na ordem pedida e cada um na sua etapa: é a sequência que a grade validou. Sem
+        // `Ordem`, todos caíam na etapa 0 — "ao mesmo tempo" —, e a pessoa ficava presa só
+        // pelo serviço mais longo, com o resto do atendimento livre para outro cliente.
+        var ordem = 0;
+        foreach (var servico in itensIds.Select(id => servicos.First(s => s.Id == id)))
         {
             agendamento.Itens.Add(new AgendamentoItem
             {
@@ -294,6 +308,8 @@ public class PaginaPublicaService
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
+                Ordem = ordem++,
+                ResponsavelId = responsavel,
             });
         }
 
@@ -395,7 +411,7 @@ public class PaginaPublicaService
     private async Task<long?> EscolherResponsavelAsync(
         DateTimeOffset inicio, int duracao, IReadOnlyCollection<long> itensIds, CancellationToken ct)
     {
-        var data = DateOnly.FromDateTime(inicio.UtcDateTime);
+        var data = _relogio.DataLocal(inicio);
         var dia = await _disponibilidade.ObterDiaAsync(data, duracao, null, ct, itensIds);
         return dia.Livres.FirstOrDefault(s => s.Inicio == inicio)?.ResponsavelId;
     }

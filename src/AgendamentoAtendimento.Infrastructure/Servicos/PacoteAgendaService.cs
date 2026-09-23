@@ -43,11 +43,14 @@ public class PacoteAgendaService
 {
     private readonly AppDbContext _db;
     private readonly DisponibilidadeService _disponibilidade;
+    private readonly RelogioDoTenant _relogio;
 
-    public PacoteAgendaService(AppDbContext db, DisponibilidadeService disponibilidade)
+    public PacoteAgendaService(
+        AppDbContext db, DisponibilidadeService disponibilidade, RelogioDoTenant relogio)
     {
         _db = db;
         _disponibilidade = disponibilidade;
+        _relogio = relogio;
     }
 
     /// <summary>
@@ -116,7 +119,7 @@ public class PacoteAgendaService
             .ToListAsync(ct);
 
         var ocupadas = marcados
-            .Select(i => DateOnly.FromDateTime(i.UtcDateTime))
+            .Select(i => _relogio.DataLocal(i))
             .ToHashSet();
 
         var faltam = Math.Max(0, ciclo.Total - marcados.Count);
@@ -186,12 +189,16 @@ public class PacoteAgendaService
         var alvo = vinculo.Hora;
         var escolhido = alvo is { } hora
             ? dia.Livres
-                .OrderBy(s => Math.Abs(
-                    (TimeOnly.FromDateTime(s.Inicio.UtcDateTime) - hora).Ticks))
+                // Em TimeSpan, e não TimeOnly - TimeOnly: essa subtração dá a volta no
+                // relógio (13:30 - 14:00 = 23:30), e todo encaixe antes da hora combinada
+                // parecia estar a quase um dia dela.
+                .OrderBy(s => (_relogio.HoraLocal(s.Inicio).ToTimeSpan()
+                               - hora.ToTimeSpan()).Duration())
                 .First()
             : dia.Livres[0];
 
-        var inicioEscolhido = TimeOnly.FromDateTime(escolhido.Inicio.UtcDateTime);
+        // A hora combinada é de parede ("quarta às 14h"); a do encaixe também tem de ser.
+        var inicioEscolhido = _relogio.HoraLocal(escolhido.Inicio);
         var observacao = alvo is { } combinada && inicioEscolhido != combinada
             ? $"A hora combinada ({combinada:HH\\:mm}) não está livre; o mais perto é "
               + $"{inicioEscolhido:HH\\:mm}."

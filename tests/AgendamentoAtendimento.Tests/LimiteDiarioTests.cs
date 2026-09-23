@@ -112,7 +112,7 @@ public class LimiteDiarioTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         // Serviço novo a cada leitura: a política é lida uma vez por requisição.
-        return await new DisponibilidadeService(_db, _contexto)
+        return await new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc)
             .ObterDiaAsync(Segunda, 60, null, default, new[] { CorteId });
     }
 
@@ -217,7 +217,7 @@ public class LimiteDiarioTests : IAsyncLifetime
         tenant.LimiteDiarioDeAtendimentos = 2;
         await _db.SaveChangesAsync();
 
-        var servico = new DisponibilidadeService(_db, _contexto);
+        var servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
         Assert.False(await servico.PodePrestarAsync(BrunaId, CorteId, Em(14), Em(15)));
     }
 
@@ -230,7 +230,7 @@ public class LimiteDiarioTests : IAsyncLifetime
         tenant.LimiteDiarioPorPessoa = 1;
         await _db.SaveChangesAsync();
 
-        var servico = new DisponibilidadeService(_db, _contexto);
+        var servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
         Assert.False(await servico.PodePrestarAsync(BrunaId, CorteId, Em(14), Em(15)));
         // O Caio não bateu nada: continua podendo.
         Assert.True(await servico.PodePrestarAsync(CaioId, CorteId, Em(14), Em(15)));

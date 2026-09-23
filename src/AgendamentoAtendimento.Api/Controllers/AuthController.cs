@@ -47,10 +47,14 @@ public class AuthController : ControllerBase
 
         var produto = ProdutoDaRequisicao(req.Produto);
 
+        // O e-mail é gravado em minúsculas (é assim que o convite o normaliza): comparar
+        // com o que foi digitado, do jeito que veio, recusava "Ana@Empresa.com".
+        var email = req.Login.Trim().ToLowerInvariant();
+
         _contexto.IgnorarFiltroDeTenant = true;
         var consulta = _db.Usuarios
             .Include(u => u.Perfil!).ThenInclude(p => p.Permissoes)
-            .Where(u => u.Email == req.Login.Trim() && u.Ativo && !u.Excluido);
+            .Where(u => u.Email.ToLower() == email && u.Ativo && !u.Excluido);
 
         if (!string.IsNullOrWhiteSpace(req.TenantSlug))
         {

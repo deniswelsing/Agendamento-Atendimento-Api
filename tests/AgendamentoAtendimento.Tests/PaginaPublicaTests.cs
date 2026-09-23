@@ -118,7 +118,8 @@ public class PaginaPublicaTests : IAsyncLifetime
         _contexto.TenantId = null;
 
         _servico = new PaginaPublicaService(
-            _db, _contexto, new DisponibilidadeService(_db, _contexto), new AssinaturaService(_db));
+            _db, _contexto, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc),
+            new AssinaturaService(_db), RelogioDeTeste.Utc);
 
         Pagina = (await _servico.AssumirPorSlugAsync("empresa-um"))!;
     }
@@ -435,5 +436,41 @@ public class PaginaPublicaTests : IAsyncLifetime
             new DateTimeOffset(2026, 9, 21, 9, 0, 0, TimeSpan.Zero), email: "outro@teste.com");
 
         Assert.NotEqual(um!.CodigoPublico, dois!.CodigoPublico);
+    }
+
+    /// <summary>
+    /// Dois serviços marcados pela página acontecem um depois do outro, com a mesma
+    /// pessoa. Gravados sem etapa, os dois caíam "ao mesmo tempo": o atendimento ia até
+    /// 10:00, mas a Bruna só ficava presa até 09:30 — e outro cliente marcava 09:30 com
+    /// ela por cima do primeiro.
+    /// </summary>
+    [Fact]
+    public async Task Varios_servicos_pela_pagina_ficam_em_sequencia_e_seguram_a_pessoa_ate_o_fim()
+    {
+        var barba = new ItemCatalogo
+        {
+            TenantId = 1, Nome = "Barba", Tipo = TipoItem.Servico,
+            Preco = 40m, DuracaoMinutos = 30, VisivelOnline = true,
+        };
+        _db.ItensCatalogo.Add(barba);
+        await _db.SaveChangesAsync();
+
+        var (primeiro, agendamento) = await _servico.AgendarAsync(
+            Pagina, "João da Silva", "joao@teste.com", "11999998888",
+            new[] { barba.Id, CorteId },
+            new DateTimeOffset(2026, 9, 21, 9, 0, 0, TimeSpan.Zero), null, null, SextaAnterior);
+
+        Assert.True(primeiro.Ok);
+        var janelas = agendamento!.Janelas().ToList();
+        // Na ordem pedida, uma depois da outra, com quem responde pelo atendimento.
+        Assert.Equal(new[] { "Barba", "Corte" }, janelas.Select(j => j.Item.Nome));
+        Assert.Equal(new TimeOnly(9, 30), TimeOnly.FromDateTime(janelas[1].Inicio.UtcDateTime));
+        Assert.All(agendamento.Itens, i => Assert.Equal(BrunaId, i.ResponsavelId));
+
+        var (segundo, _) = await AgendarAsync(
+            new DateTimeOffset(2026, 9, 21, 9, 30, 0, TimeSpan.Zero), email: "outro@teste.com");
+
+        Assert.False(segundo.Ok);
+        Assert.Equal(RecusaPublica.HorarioIndisponivel, segundo.Motivo);
     }
 }

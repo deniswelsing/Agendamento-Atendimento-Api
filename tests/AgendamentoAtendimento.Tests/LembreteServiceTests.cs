@@ -55,7 +55,7 @@ public class LembreteServiceTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new LembreteService(_db, _enviador);
+        _servico = new LembreteService(_db, _enviador, RelogioDeTeste.Utc);
 
         var cliente = new Cliente
         {

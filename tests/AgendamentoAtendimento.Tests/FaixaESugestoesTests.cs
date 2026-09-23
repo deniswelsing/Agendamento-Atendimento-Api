@@ -35,7 +35,7 @@ public class FaixaESugestoesTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new DisponibilidadeService(_db, _contexto);
+        _servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
 
         // A semana inteira aberta das 9 às 18, de hora em hora.
         foreach (var dia in Enum.GetValues<DayOfWeek>())

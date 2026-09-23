@@ -36,7 +36,7 @@ public class ExecutoresDeServicoTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new DisponibilidadeService(_db, _contexto);
+        _servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
 
         _db.HorariosFuncionamento.Add(new HorarioFuncionamento
         {

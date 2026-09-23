@@ -7,6 +7,11 @@ Toda rota autenticada espera:
 | `Authorization` | `Bearer <accessToken>` |
 | `X-Produto` | `agendamento-atendimento` ou `petshop-route` |
 
+Datas e horas: todo `DateTimeOffset` (ex.: `inicio`, `fim`) é um instante real em UTC, e
+é assim que deve ser enviado de volta (qualquer deslocamento é aceito e normalizado).
+Horário de funcionamento, `horaDe`/`horaAte` e parâmetros `DateOnly` (`data`, `de`,
+`ate`) são interpretados no fuso da empresa (`Tenant.FusoHorario`).
+
 Erros voltam como `{ "message": "...", "code": "..." }`.
 
 | Status | Significado |

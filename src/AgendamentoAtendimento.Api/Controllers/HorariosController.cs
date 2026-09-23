@@ -4,6 +4,7 @@ using AgendamentoAtendimento.Api.Contratos;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,8 +18,13 @@ namespace AgendamentoAtendimento.Api.Controllers;
 public class HorariosController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
+    private readonly RelogioDoTenant _relogio;
 
-    public HorariosController(AppDbContext db) => _db = db;
+    public HorariosController(AppDbContext db, RelogioDoTenant relogio)
+    {
+        _db = db;
+        _relogio = relogio;
+    }
 
     // ------------------------------------------------------------- modo de ocupação
     /// <summary>
@@ -241,7 +247,7 @@ public class HorariosController : ControllerBaseApi
             await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == TenantId, ct),
             "Empresa não encontrada.");
 
-        var dia = data ?? DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        var dia = data ?? _relogio.Hoje();
         var usados = await ContarDoDiaAsync(dia, ct);
 
         return Ok(Montar(tenant.LimiteDiarioDeAtendimentos, tenant.LimiteDiarioPorPessoa, usados));
@@ -276,14 +282,14 @@ public class HorariosController : ControllerBaseApi
         tenant.LimiteDiarioPorPessoa = req.LimitePorPessoa;
         await _db.SaveChangesAsync(ct);
 
-        var hoje = DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        var hoje = _relogio.Hoje();
         return Ok(Montar(req.LimiteDoDia, req.LimitePorPessoa, await ContarDoDiaAsync(hoje, ct)));
     }
 
     private Task<int> ContarDoDiaAsync(DateOnly dia, CancellationToken ct)
     {
-        var inicio = new DateTimeOffset(dia.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        var fim = inicio.AddDays(1);
+        var inicio = _relogio.InicioDoDia(dia);
+        var fim = _relogio.FimDoDia(dia);
         return _db.Agendamentos.CountAsync(
             a => a.Inicio < fim && a.Fim > inicio && a.Status != StatusAgendamento.Cancelado, ct);
     }

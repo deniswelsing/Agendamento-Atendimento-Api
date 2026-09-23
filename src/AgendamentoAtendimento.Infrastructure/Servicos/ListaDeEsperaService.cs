@@ -1,5 +1,6 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
@@ -12,8 +13,13 @@ namespace AgendamentoAtendimento.Infrastructure.Servicos;
 public class ListaDeEsperaService
 {
     private readonly AppDbContext _db;
+    private readonly RelogioDoTenant _relogio;
 
-    public ListaDeEsperaService(AppDbContext db) => _db = db;
+    public ListaDeEsperaService(AppDbContext db, RelogioDoTenant relogio)
+    {
+        _db = db;
+        _relogio = relogio;
+    }
 
     /// <summary>
     /// Põe alguém na fila. Já estar nela devolve a entrada que existe, em vez de criar
@@ -63,7 +69,8 @@ public class ListaDeEsperaService
     public async Task<IReadOnlyList<EntradaListaDeEspera>> QuemEsperavaPorAsync(
         Agendamento agendamento, CancellationToken ct)
     {
-        var data = DateOnly.FromDateTime(agendamento.Inicio.UtcDateTime);
+        // O dia que a vaga abriu, no calendário da empresa — é nele que a fila pensa.
+        var data = _relogio.DataLocal(agendamento.Inicio);
 
         // Os serviços que a vaga libera, com quem os prestava.
         var liberados = agendamento.Itens

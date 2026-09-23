@@ -29,6 +29,11 @@ builder.Services.AddDbContext<AppDbContext>(opcoes =>
 builder.Services.AddScoped<ContextoAtual>();
 builder.Services.AddScoped<IContextoAtual>(sp => sp.GetRequiredService<ContextoAtual>());
 
+// O relógio da empresa: "hoje" e o horário de funcionamento no fuso do tenant. O
+// TimeProvider é a fonte do "agora", e é por ele que um teste congela o tempo.
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<RelogioDoTenant>();
+
 builder.Services.AddScoped<DisponibilidadeService>();
 builder.Services.AddScoped<AssinaturaService>();
 builder.Services.AddScoped<VendaService>();

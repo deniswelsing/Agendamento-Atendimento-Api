@@ -36,6 +36,10 @@ dotnet run --project src/AgendamentoAtendimento.Api
 Em `Development` a API aplica as migrations no start e semeia um tenant de demonstração
 (`Banco:SemearDemo`). Swagger em `/swagger`, health check em `/health`.
 
+`PaginaPublica:BaseUrl` é o endereço do painel web: o link da página pública que o dono
+compartilha sai como `{BaseUrl}/p/{slug}`. Vazio, a Api usa o próprio host — o que só
+serve quando o painel é servido pela mesma origem.
+
 ```bash
 dotnet test           # 26 testes
 ```
@@ -78,6 +82,11 @@ os índices únicos são parciais: sem isso, um e-mail removido bloquearia o rec
 **Auditoria automática.** Toda inserção, alteração e exclusão de entidade de tenant grava
 uma linha em `audit_logs` com o que mudou, quem mudou e por qual produto. Campos com
 `senha` ou `token` no nome nunca entram na trilha.
+
+**Datas e fuso.** Todo `DateTimeOffset` que a Api grava e devolve é um instante real, em
+UTC. Horário de funcionamento, jornadas, "hoje" e os filtros por data (`data`, `de`, `ate`)
+são interpretados no fuso da empresa (`Tenant.FusoHorario`, padrão `America/Sao_Paulo`) pelo
+`RelogioDoTenant`: o encaixe das 08:00 de São Paulo sai como `11:00:00+00:00`.
 
 **Permissões como catálogo.** `GET /api/perfis/catalogo` devolve as telas e as ações de
 cada uma. O admin monta os perfis a partir dessa lista e o app renderiza a tela de

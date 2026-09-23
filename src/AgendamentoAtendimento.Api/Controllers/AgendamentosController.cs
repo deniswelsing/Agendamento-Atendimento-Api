@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,17 +23,20 @@ public class AgendamentosController : ControllerBaseApi
     private readonly DisponibilidadeService _disponibilidade;
     private readonly LembreteService _lembretes;
     private readonly ListaDeEsperaService _fila;
+    private readonly RelogioDoTenant _relogio;
 
     public AgendamentosController(
         AppDbContext db,
         DisponibilidadeService disponibilidade,
         LembreteService lembretes,
-        ListaDeEsperaService fila)
+        ListaDeEsperaService fila,
+        RelogioDoTenant relogio)
     {
         _db = db;
         _disponibilidade = disponibilidade;
         _lembretes = lembretes;
         _fila = fila;
+        _relogio = relogio;
     }
 
     [HttpGet]
@@ -55,8 +59,10 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException("O período não pode passar de 92 dias.", "PERIODO");
         }
 
-        var inicio = new DateTimeOffset(de.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        var fim = new DateTimeOffset(ate.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        // Os dias pedidos são os da empresa: o atendimento das 22h de São Paulo é do dia
+        // em que acontece lá, e não do seguinte, como seria cortando em UTC.
+        var inicio = _relogio.InicioDoDia(de);
+        var fim = _relogio.FimDoDia(ate);
 
         var agendamentos = await SomenteVisiveis(_db.Agendamentos.AsNoTracking())
             .Include(a => a.Cliente)
@@ -370,13 +376,26 @@ public class AgendamentosController : ControllerBaseApi
                 "Agendamento concluído ou cancelado não pode ser alterado.", "STATUS_FINAL");
         }
 
+        if (req.ItensIds is null || req.ItensIds.Count == 0)
+        {
+            throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
+        }
+
+        // O cliente vem do pedido: sem conferir, um id qualquer (de outra empresa,
+        // inclusive) ia para a chave estrangeira e o atendimento sumia da agenda.
+        NaoNulo(
+            await _db.Clientes.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
+            "Cliente não encontrado.");
+
         var servicos = await _db.ItensCatalogo
             .Where(i => req.ItensIds.Contains(i.Id) && i.Tipo == TipoItem.Servico)
             .ToListAsync(ct);
 
-        if (servicos.Count == 0)
+        // Um id que não é serviço desta empresa derrubava o `First` lá embaixo com 500.
+        if (servicos.Count != req.ItensIds.Distinct().Count())
         {
-            throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
+            throw new RegraDeNegocioException(
+                "Algum serviço não existe ou não é um serviço.", "SERVICO_INVALIDO");
         }
 
         var inicio = req.Inicio.ToUniversalTime();
@@ -513,7 +532,7 @@ public class AgendamentosController : ControllerBaseApi
         var esperando = await _fila.QuemEsperavaPorAsync(comItens, ct);
 
         return Ok(new OportunidadeDto(
-            DateOnly.FromDateTime(comItens.Inicio.UtcDateTime),
+            _relogio.DataLocal(comItens.Inicio),
             comItens.Id,
             esperando.Select(EsperaResumida).ToList()));
     }

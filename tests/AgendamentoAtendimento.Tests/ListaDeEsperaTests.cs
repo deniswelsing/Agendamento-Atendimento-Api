@@ -36,7 +36,7 @@ public class ListaDeEsperaTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _fila = new ListaDeEsperaService(_db);
+        _fila = new ListaDeEsperaService(_db, RelogioDeTeste.Utc);
 
         var ana = new Cliente { TenantId = 1, Tipo = TipoCliente.Pessoa, Nome = "Ana" };
         var bruno = new Cliente { TenantId = 1, Tipo = TipoCliente.Pessoa, Nome = "Bruno" };

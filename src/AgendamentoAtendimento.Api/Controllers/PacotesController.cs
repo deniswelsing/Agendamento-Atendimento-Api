@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,20 +25,24 @@ public class PacotesController : ControllerBaseApi
     private readonly PacoteAgendaService _agenda;
     private readonly RecorrenciaDePacotesService _recorrencia;
     private readonly DisponibilidadeService _disponibilidade;
+    private readonly RelogioDoTenant _relogio;
 
     public PacotesController(
         AppDbContext db,
         PacoteAgendaService agenda,
         RecorrenciaDePacotesService recorrencia,
-        DisponibilidadeService disponibilidade)
+        DisponibilidadeService disponibilidade,
+        RelogioDoTenant relogio)
     {
         _db = db;
         _agenda = agenda;
         _recorrencia = recorrencia;
         _disponibilidade = disponibilidade;
+        _relogio = relogio;
     }
 
-    private static DateOnly Hoje => DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+    /// <summary>Hoje no calendário da empresa — é nele que os ciclos começam e vencem.</summary>
+    private DateOnly Hoje => _relogio.Hoje();
 
     // ------------------------------------------------------------ modelos
     [HttpGet("modelos")]
@@ -130,13 +135,7 @@ public class PacotesController : ControllerBaseApi
             .OrderBy(p => p.Status).ThenBy(p => p.FimDoCicloAtual)
             .ToListAsync(ct);
 
-        var saida = new List<PacoteDto>();
-        foreach (var pacote in pacotes)
-        {
-            saida.Add(await MontarAsync(pacote, ct));
-        }
-
-        return Ok(saida);
+        return Ok(await MontarVariosAsync(pacotes, ct));
     }
 
     [HttpGet("{id:long}")]
@@ -215,8 +214,26 @@ public class PacotesController : ControllerBaseApi
 
         // Um cliente num pacote só: duas bolsas de sessões para a mesma pessoa não teriam
         // como decidir de qual sai o atendimento de hoje.
+        // Vínculo que sobrou "ativo" num pacote que já acabou (gravado antes de a
+        // varredura passar a encerrá-lo) não prende ninguém: é fechado aqui.
+        var vinculosAntigos = await _db.PacoteClientes
+            .Where(c => c.ClienteId == cliente.Id && c.Ativo
+                        && c.Pacote!.Status != StatusDePacote.Ativo)
+            .ToListAsync(ct);
+        foreach (var antigo in vinculosAntigos)
+        {
+            antigo.Ativo = false;
+        }
+
+        if (vinculosAntigos.Count > 0)
+        {
+            // Antes do novo vínculo: o índice único de vínculo ativo não pode ver os dois.
+            await _db.SaveChangesAsync(ct);
+        }
+
         var jaEstaEm = await _db.PacoteClientes.AsNoTracking()
-            .Where(c => c.ClienteId == cliente.Id && c.Ativo)
+            .Where(c => c.ClienteId == cliente.Id && c.Ativo
+                        && c.Pacote!.Status == StatusDePacote.Ativo)
             .Select(c => c.PacoteId)
             .FirstOrDefaultAsync(ct);
         if (jaEstaEm != 0)
@@ -293,7 +310,11 @@ public class PacotesController : ControllerBaseApi
         // fora deixaria o saldo deste ciclo pagar um atendimento do seguinte — e num
         // pacote sem recorrência, o estorno do que sobrou sairia com o atendimento ainda
         // marcado lá na frente.
-        var dia = DateOnly.FromDateTime(req.Inicio.UtcDateTime);
+        // Em UTC, como o resto da agenda: o Npgsql recusa gravar DateTimeOffset com outro
+        // deslocamento em timestamptz, e o 500 vinha só na hora de salvar.
+        var inicio = req.Inicio.ToUniversalTime();
+        // O ciclo é de datas da empresa, então o dia da sessão também.
+        var dia = _relogio.DataLocal(inicio);
         if (dia < ciclo.Inicio || dia > ciclo.Fim)
         {
             throw new RegraDeNegocioException(
@@ -325,13 +346,13 @@ public class PacotesController : ControllerBaseApi
         {
             duracao = 30;
         }
-        var fim = req.Inicio.AddMinutes(duracao);
+        var fim = inicio.AddMinutes(duracao);
 
         var responsavel = req.ResponsavelId ?? vinculo.ResponsavelPreferidoId;
         if (responsavel is null)
         {
             var livres = await _disponibilidade.QuemPodePrestarAsync(
-                itens.FirstOrDefault(), req.Inicio, fim, null, ct, req.Inicio, fim);
+                itens.FirstOrDefault(), inicio, fim, null, ct, inicio, fim);
             responsavel = livres.FirstOrDefault()?.UsuarioId;
         }
 
@@ -342,9 +363,33 @@ public class PacotesController : ControllerBaseApi
                 "SEM_RESPONSAVEL_LIVRE");
         }
 
+        // Quem vai atender tem de prestar cada serviço e estar livre na janela dele — a
+        // mesma regra do agendamento avulso. Sem isto, a pessoa escolhida (ou a preferida
+        // do cliente) era gravada por cima de outro compromisso, fora da jornada ou num
+        // dia em que a empresa está fechada.
+        var cursor = inicio;
+        foreach (var servico in servicos.Cast<ItemCatalogo?>().DefaultIfEmpty())
+        {
+            var fimDoServico = servico is null
+                ? fim
+                : cursor.AddMinutes(servico.DuracaoMinutos ?? 30);
+            var pode = await _disponibilidade.PodePrestarAsync(
+                responsavel.Value, servico?.Id, cursor, fimDoServico, null, ct, inicio, fim);
+            if (!pode)
+            {
+                throw new RegraDeNegocioException(
+                    servico is null
+                        ? "A pessoa escolhida não está livre nesse horário."
+                        : $"A pessoa escolhida não pode atender \"{servico.Nome}\" nesse horário.",
+                    "RESPONSAVEL_INDISPONIVEL");
+            }
+
+            cursor = fimDoServico;
+        }
+
         var agendamento = new Agendamento
         {
-            ClienteId = vinculo.ClienteId, Inicio = req.Inicio, Fim = fim,
+            ClienteId = vinculo.ClienteId, Inicio = inicio, Fim = fim,
             Status = StatusAgendamento.Agendado, ResponsavelId = responsavel,
             PacoteClienteId = vinculo.Id, PacoteCiclo = ciclo.Ciclo,
             Observacoes = $"Pacote: {pacote.Nome}",
@@ -539,66 +584,121 @@ public class PacotesController : ControllerBaseApi
         _ => "anual",
     };
 
-    private async Task<PacoteDto> MontarAsync(Pacote p, CancellationToken ct)
+    private async Task<PacoteDto> MontarAsync(Pacote p, CancellationToken ct) =>
+        (await MontarVariosAsync(new[] { p }, ct))[0];
+
+    /// <summary>
+    /// Os pacotes com itens e clientes, em poucas consultas para a lista inteira. Montar
+    /// um a um fazia duas consultas por pacote e mais quatro por cliente de cada um — a
+    /// tela de pacotes crescia em idas ao banco junto com a carteira.
+    /// </summary>
+    private async Task<List<PacoteDto>> MontarVariosAsync(
+        IReadOnlyList<Pacote> pacotes, CancellationToken ct)
     {
-        var itens = await _db.PacoteItens.AsNoTracking()
-            .Where(i => i.PacoteId == p.Id)
-            .Join(_db.ItensCatalogo.AsNoTracking(), i => i.ItemCatalogoId, c => c.Id,
-                (i, c) => new ItemDoPacoteDto(c.Id, c.Nome, c.DuracaoMinutos ?? 0, c.Preco))
-            .ToListAsync(ct);
+        var ids = pacotes.Select(p => p.Id).ToList();
+
+        var itens = (await _db.PacoteItens.AsNoTracking()
+                .Where(i => ids.Contains(i.PacoteId))
+                .Join(_db.ItensCatalogo.AsNoTracking(), i => i.ItemCatalogoId, c => c.Id,
+                    (i, c) => new
+                    {
+                        i.PacoteId,
+                        Dto = new ItemDoPacoteDto(c.Id, c.Nome, c.DuracaoMinutos ?? 0, c.Preco),
+                    })
+                .ToListAsync(ct))
+            .ToLookup(x => x.PacoteId, x => x.Dto);
 
         var vinculos = await _db.PacoteClientes.AsNoTracking()
-            .Where(c => c.PacoteId == p.Id)
+            .Where(c => ids.Contains(c.PacoteId))
             .OrderByDescending(c => c.Ativo)
             .ToListAsync(ct);
 
-        var clientes = new List<PacoteClienteDto>();
-        foreach (var vinculo in vinculos)
+        var clientes = (await MontarClientesAsync(vinculos, ct)).ToLookup(c => c.PacoteId);
+
+        return pacotes.Select(p =>
         {
-            clientes.Add(await MontarClienteAsync(vinculo, ct));
-        }
+            var doPacote = clientes[p.Id].ToList();
+            var dias = p.DiasAteVencer(Hoje);
+            var resumo = p.EhRecorrente
+                ? $"{p.QuantidadePorCliente} por ciclo · {Periodo(p.Recorrencia)} · "
+                  + $"{doPacote.Count(c => c.Ativo)} cliente(s)"
+                : $"{p.QuantidadePorCliente} atendimento(s) · sem recorrência · "
+                  + $"{doPacote.Count(c => c.Ativo)} cliente(s)";
 
-        var dias = p.DiasAteVencer(Hoje);
-        var resumo = p.EhRecorrente
-            ? $"{p.QuantidadePorCliente} por ciclo · {Periodo(p.Recorrencia)} · "
-              + $"{clientes.Count(c => c.Ativo)} cliente(s)"
-            : $"{p.QuantidadePorCliente} atendimento(s) · sem recorrência · "
-              + $"{clientes.Count(c => c.Ativo)} cliente(s)";
-
-        return new PacoteDto(
-            p.Id, p.PacoteModeloId, p.Nome, p.QuantidadePorCliente, p.PrecoPorCliente,
-            p.Recorrencia, p.Status, p.CicloAtual, p.InicioDoCicloAtual, p.FimDoCicloAtual,
-            p.EhRecorrente, p.ValorPorAtendimento, dias, itens, clientes, resumo);
+            return new PacoteDto(
+                p.Id, p.PacoteModeloId, p.Nome, p.QuantidadePorCliente, p.PrecoPorCliente,
+                p.Recorrencia, p.Status, p.CicloAtual, p.InicioDoCicloAtual, p.FimDoCicloAtual,
+                p.EhRecorrente, p.ValorPorAtendimento, dias, itens[p.Id].ToList(), doPacote,
+                resumo);
+        }).ToList();
     }
 
-    private async Task<PacoteClienteDto> MontarClienteAsync(PacoteCliente c, CancellationToken ct)
+    private async Task<PacoteClienteDto> MontarClienteAsync(PacoteCliente c, CancellationToken ct) =>
+        (await MontarClientesAsync(new[] { c }, ct))[0];
+
+    /// <summary>
+    /// Cada cliente no pacote com o ciclo aberto e o que falta marcar. Uma consulta por
+    /// tipo de dado — nome, responsável, ciclo, marcados —, e não por cliente.
+    /// </summary>
+    private async Task<List<PacoteClienteDto>> MontarClientesAsync(
+        IReadOnlyList<PacoteCliente> vinculos, CancellationToken ct)
     {
-        var cliente = await _db.Clientes.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == c.ClienteId, ct);
+        if (vinculos.Count == 0)
+        {
+            return new List<PacoteClienteDto>();
+        }
 
-        var responsavel = c.ResponsavelPreferidoId is { } rid
-            ? await _db.Usuarios.AsNoTracking()
-                .Where(u => u.Id == rid).Select(u => u.Nome).FirstOrDefaultAsync(ct)
-            : null;
+        var vinculosIds = vinculos.Select(v => v.Id).ToList();
+        var clientesIds = vinculos.Select(v => v.ClienteId).Distinct().ToList();
+        var responsaveisIds = vinculos.Select(v => v.ResponsavelPreferidoId)
+            .OfType<long>().Distinct().ToList();
 
-        var ciclo = await _db.CiclosDePacote.AsNoTracking()
-            .Where(x => x.PacoteClienteId == c.Id && !x.Encerrado)
-            .OrderByDescending(x => x.Ciclo)
-            .FirstOrDefaultAsync(ct);
+        var clientes = await _db.Clientes.AsNoTracking()
+            .Where(x => clientesIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, ct);
 
-        var marcados = ciclo is null ? 0 : await _db.Agendamentos.CountAsync(
-            a => a.PacoteClienteId == c.Id && a.PacoteCiclo == ciclo.Ciclo
-                 && a.Status != StatusAgendamento.Cancelado, ct);
+        var responsaveis = responsaveisIds.Count == 0
+            ? new Dictionary<long, string>()
+            : await _db.Usuarios.AsNoTracking()
+                .Where(u => responsaveisIds.Contains(u.Id))
+                .ToDictionaryAsync(u => u.Id, u => u.Nome, ct);
 
-        var preferencia = c.DiaDaSemana is { } dia
-            ? $"Toda {NomeDoDia(dia)}" + (c.Hora is { } h ? $" às {h:HH\\:mm}" : string.Empty)
-            : string.Empty;
+        // O ciclo aberto de cada vínculo é o de maior número entre os não encerrados.
+        var ciclos = (await _db.CiclosDePacote.AsNoTracking()
+                .Where(x => vinculosIds.Contains(x.PacoteClienteId) && !x.Encerrado)
+                .ToListAsync(ct))
+            .GroupBy(x => x.PacoteClienteId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Ciclo).First());
 
-        return new PacoteClienteDto(
-            c.Id, c.PacoteId, c.ClienteId, cliente?.NomeExibicao ?? "—",
-            c.DiaDaSemana, c.Hora, c.ResponsavelPreferidoId, responsavel, c.Ativo,
-            ciclo is null ? null : Montar(ciclo), preferencia,
-            ciclo is null ? 0 : Math.Max(0, ciclo.Total - marcados));
+        var marcados = (await _db.Agendamentos.AsNoTracking()
+                .Where(a => a.PacoteClienteId != null
+                            && vinculosIds.Contains(a.PacoteClienteId.Value)
+                            && a.Status != StatusAgendamento.Cancelado)
+                .GroupBy(a => new { a.PacoteClienteId, a.PacoteCiclo })
+                .Select(g => new { g.Key.PacoteClienteId, g.Key.PacoteCiclo, Quantos = g.Count() })
+                .ToListAsync(ct))
+            .ToDictionary(x => (x.PacoteClienteId!.Value, x.PacoteCiclo), x => x.Quantos);
+
+        return vinculos.Select(c =>
+        {
+            var ciclo = ciclos.GetValueOrDefault(c.Id);
+            var jaMarcados = ciclo is null
+                ? 0
+                : marcados.GetValueOrDefault((c.Id, (int?)ciclo.Ciclo), 0);
+
+            var preferencia = c.DiaDaSemana is { } dia
+                ? $"Toda {NomeDoDia(dia)}" + (c.Hora is { } h ? $" às {h:HH\\:mm}" : string.Empty)
+                : string.Empty;
+
+            return new PacoteClienteDto(
+                c.Id, c.PacoteId, c.ClienteId,
+                clientes.GetValueOrDefault(c.ClienteId)?.NomeExibicao ?? "—",
+                c.DiaDaSemana, c.Hora, c.ResponsavelPreferidoId,
+                c.ResponsavelPreferidoId is { } rid ? responsaveis.GetValueOrDefault(rid) : null,
+                c.Ativo,
+                ciclo is null ? null : Montar(ciclo), preferencia,
+                ciclo is null ? 0 : Math.Max(0, ciclo.Total - jaMarcados));
+        }).ToList();
     }
 
     private static CicloDoClienteDto Montar(CicloDoCliente c) => new(
