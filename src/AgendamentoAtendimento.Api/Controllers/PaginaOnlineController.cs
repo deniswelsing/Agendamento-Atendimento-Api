@@ -237,7 +237,9 @@ public class PaginaOnlineController : ControllerBaseApi
             baseUrl = $"{Request.Scheme}://{Request.Host}";
         }
 
-        return string.IsNullOrWhiteSpace(slug) ? baseUrl : $"{baseUrl}/{slug}";
+        // A página mora na rota `/p/:slug` do painel web. Sem o `/p` o link compartilhado
+        // caía na tela de login (ou num 404), e não na página de agendamento.
+        return string.IsNullOrWhiteSpace(slug) ? baseUrl : $"{baseUrl}/p/{Uri.EscapeDataString(slug)}";
     }
 
     private static string? Limpar(string? texto) =>

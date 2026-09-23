@@ -185,4 +185,37 @@ public class DisponibilidadeServiceTests : IAsyncLifetime
         Assert.False(dias[0].Aberto);
         Assert.True(dias[1].Aberto);
     }
+
+    /// <summary>
+    /// Empresa que fecha perto da meia-noite. `TimeOnly.AddMinutes` dá a volta no relógio:
+    /// 23:30 + 30 min vira 00:00, que é "<= 23:30", e a grade nunca parava de andar — a
+    /// requisição (inclusive a da página pública, sem token) girava para sempre.
+    /// </summary>
+    [Fact]
+    public async Task Fechamento_perto_da_meia_noite_nao_prende_a_grade_num_laco()
+    {
+        var terca = new DateOnly(2026, 9, 22);
+        _db.HorariosFuncionamento.Add(new HorarioFuncionamento
+        {
+            TenantId = 1, DiaDaSemana = DayOfWeek.Tuesday, Aberto = true,
+            Abertura = new TimeOnly(8, 0), Fechamento = new TimeOnly(23, 30),
+            IntervaloSlotMinutos = 30,
+        });
+        _db.HorariosStaff.Add(new HorarioStaff
+        {
+            TenantId = 1, UsuarioId = UsuarioId, DiaDaSemana = DayOfWeek.Tuesday,
+            Inicio = new TimeOnly(8, 0), Fim = new TimeOnly(23, 30), Trabalha = true,
+        });
+        await _db.SaveChangesAsync();
+
+        // Em outra thread e com prazo: o laço era síncrono, e uma regressão prenderia o
+        // próprio teste em vez de falhar.
+        var servico = new DisponibilidadeService(_db, _contexto);
+        var dia = await Task.Run(() => servico.ObterDiaAsync(terca, 30))
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(31, dia.Livres.Count);
+        Assert.Equal(new TimeOnly(23, 0), TimeOnly.FromDateTime(dia.Livres[^1].Inicio.UtcDateTime));
+        Assert.All(dia.Livres, s => Assert.True(s.Fim > s.Inicio));
+    }
 }

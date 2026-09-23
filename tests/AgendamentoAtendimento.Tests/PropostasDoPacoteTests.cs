@@ -1,3 +1,6 @@
+using AgendamentoAtendimento.Api.Comum;
+using AgendamentoAtendimento.Api.Contratos;
+using AgendamentoAtendimento.Api.Controllers;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Clientes;
@@ -170,5 +173,121 @@ public class PropostasDoPacoteTests : IAsyncLifetime
 
         // O pacote vira só saldo: as datas saem de onde o time quiser, uma a uma.
         Assert.Empty(await _servico.ProporAsync(_vinculoId, Quarta));
+    }
+
+    /// <summary>
+    /// A hora combinada (14:00) está tomada: a proposta é o encaixe mais PERTO, antes ou
+    /// depois. `TimeOnly - TimeOnly` dá a volta no relógio (12:30 - 14:00 = 22:30), e com
+    /// ele todo encaixe anterior parecia estar a quase um dia — a proposta pulava para o
+    /// fim da tarde.
+    /// </summary>
+    [Fact]
+    public async Task Hora_tomada_propoe_o_encaixe_mais_perto_mesmo_que_seja_antes()
+    {
+        var bruna = await _db.Usuarios.FirstAsync();
+        _db.ExcecoesHorarioStaff.Add(new ExcecaoHorarioStaff
+        {
+            TenantId = 1, UsuarioId = bruna.Id, Data = Quarta, DiaInteiro = false,
+            Inicio = new TimeOnly(13, 30), Fim = new TimeOnly(16, 0),
+        });
+        await _db.SaveChangesAsync();
+
+        var propostas = await _servico.ProporAsync(_vinculoId, Quarta);
+
+        var desta = propostas.Single(p => p.Data == Quarta);
+        // 12:30 está a 1h30 das 14:00; 16:00, a 2h.
+        Assert.Equal(new TimeOnly(12, 30), TimeOnly.FromDateTime(desta.Inicio!.Value.UtcDateTime));
+    }
+
+    private PacotesController Controller()
+    {
+        var disponibilidade = new DisponibilidadeService(_db, _contexto);
+        return new PacotesController(
+            _db, new PacoteAgendaService(_db, disponibilidade),
+            new RecorrenciaDePacotesService(_db), disponibilidade)
+        {
+            ControllerContext = ContextoDoController.Com("*"),
+        };
+    }
+
+    /// <summary>
+    /// Marcar pelo pacote passa pela mesma regra do agendamento avulso. Antes, com a
+    /// pessoa preferida do cliente, o horário era gravado sem conferir nada — por cima de
+    /// outro atendimento dela, fora da jornada ou com a empresa fechada.
+    /// </summary>
+    [Fact]
+    public async Task Marcar_pelo_pacote_nao_passa_por_cima_de_outro_atendimento()
+    {
+        var bruna = await _db.Usuarios.FirstAsync();
+        var inicio = new DateTimeOffset(2026, 9, 23, 14, 0, 0, TimeSpan.Zero);
+        _db.Agendamentos.Add(new Agendamento
+        {
+            TenantId = 1, ClienteId = 1, ResponsavelId = bruna.Id,
+            Inicio = inicio, Fim = inicio.AddHours(1), Status = StatusAgendamento.Agendado,
+        });
+        await _db.SaveChangesAsync();
+
+        var erro = await Assert.ThrowsAsync<RegraDeNegocioException>(() => Controller().Marcar(
+            _vinculoId, new MarcarDoPacoteRequest(inicio.AddMinutes(30), null), default));
+
+        Assert.Equal("RESPONSAVEL_INDISPONIVEL", erro.Codigo);
+        Assert.Equal(0, await _db.Agendamentos.CountAsync(a => a.PacoteClienteId == _vinculoId));
+    }
+
+    [Fact]
+    public async Task Marcar_pelo_pacote_num_horario_livre_grava_o_atendimento()
+    {
+        var inicio = new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
+
+        await Controller().Marcar(_vinculoId, new MarcarDoPacoteRequest(inicio, null), default);
+
+        var marcado = await _db.Agendamentos.SingleAsync(a => a.PacoteClienteId == _vinculoId);
+        Assert.Equal(inicio, marcado.Inicio);
+    }
+
+    /// <summary>Fora do horário da empresa não se marca, nem pelo pacote.</summary>
+    [Fact]
+    public async Task Marcar_pelo_pacote_fora_do_funcionamento_e_recusado()
+    {
+        var inicio = new DateTimeOffset(2026, 9, 23, 20, 0, 0, TimeSpan.Zero);
+
+        await Assert.ThrowsAsync<RegraDeNegocioException>(() => Controller().Marcar(
+            _vinculoId, new MarcarDoPacoteRequest(inicio, null), default));
+    }
+
+    /// <summary>
+    /// A lista de pacotes monta itens e clientes em lote. O que ela diz de cada cliente —
+    /// nome, preferido, ciclo aberto e quanto falta marcar — tem de ser o mesmo de antes.
+    /// </summary>
+    [Fact]
+    public async Task Lista_de_pacotes_traz_itens_clientes_e_o_que_falta_marcar()
+    {
+        _db.Agendamentos.Add(new Agendamento
+        {
+            TenantId = 1, ClienteId = 1, PacoteClienteId = _vinculoId, PacoteCiclo = 1,
+            Inicio = new DateTimeOffset(2026, 9, 30, 14, 0, 0, TimeSpan.Zero),
+            Fim = new DateTimeOffset(2026, 9, 30, 15, 0, 0, TimeSpan.Zero),
+            Status = StatusAgendamento.Agendado,
+        });
+        _db.Agendamentos.Add(new Agendamento
+        {
+            TenantId = 1, ClienteId = 1, PacoteClienteId = _vinculoId, PacoteCiclo = 1,
+            Inicio = new DateTimeOffset(2026, 10, 7, 14, 0, 0, TimeSpan.Zero),
+            Fim = new DateTimeOffset(2026, 10, 7, 15, 0, 0, TimeSpan.Zero),
+            Status = StatusAgendamento.Cancelado,
+        });
+        await _db.SaveChangesAsync();
+
+        var resposta = await Controller().Listar(null, default);
+        var pacote = Assert.Single((IReadOnlyList<PacoteDto>)((Microsoft.AspNetCore.Mvc.OkObjectResult)resposta.Result!).Value!);
+
+        Assert.Equal("Consultoria", Assert.Single(pacote.Itens).Nome);
+        var cliente = Assert.Single(pacote.Clientes);
+        Assert.Equal("Ana", cliente.ClienteNome);
+        Assert.Equal("Bruna", cliente.ResponsavelPreferidoNome);
+        Assert.Equal(1, cliente.CicloAtual!.Ciclo);
+        // Quatro no ciclo, um marcado (o cancelado não conta).
+        Assert.Equal(3, cliente.FaltamMarcar);
+        Assert.Contains("1 cliente(s)", pacote.Resumo);
     }
 }

@@ -40,11 +40,13 @@ public class CatalogoController : ControllerBaseApi
 
         if (!string.IsNullOrWhiteSpace(busca))
         {
-            var termo = $"%{busca.Trim()}%";
+            // Com `%` e `_` escapados: buscar "50%" não pode virar curinga.
+            var termo = BuscaTextual.PadraoContem(busca);
+            const string escape = BuscaTextual.Escape;
             consulta = consulta.Where(i =>
-                EF.Functions.ILike(i.Nome, termo) ||
-                EF.Functions.ILike(i.Categoria ?? string.Empty, termo) ||
-                EF.Functions.ILike(i.CodigoDeBarras ?? string.Empty, termo));
+                EF.Functions.ILike(i.Nome, termo, escape) ||
+                EF.Functions.ILike(i.Categoria ?? string.Empty, termo, escape) ||
+                EF.Functions.ILike(i.CodigoDeBarras ?? string.Empty, termo, escape));
         }
 
         var total = await consulta.CountAsync(ct);

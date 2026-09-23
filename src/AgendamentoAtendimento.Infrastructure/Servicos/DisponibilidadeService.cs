@@ -1,4 +1,5 @@
 using AgendamentoAtendimento.Domain.Agenda;
+using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
@@ -206,9 +207,7 @@ public class DisponibilidadeService
     {
         var diaDaSemana = data.DayOfWeek;
 
-        var horarioEmpresa = await _db.HorariosFuncionamento
-            .AsNoTracking()
-            .FirstOrDefaultAsync(h => h.DiaDaSemana == diaDaSemana, ct);
+        var horarioEmpresa = await HorarioDaEmpresaAsync(diaDaSemana, ct);
 
         var excecaoEmpresa = await _db.ExcecoesHorarioFuncionamento
             .AsNoTracking()
@@ -402,9 +401,15 @@ public class DisponibilidadeService
         var livres = new List<SlotDisponivel>();
         var inicioDoDia = Maior(abertura.Value, TimeOnly.MinValue);
 
-        for (var t = inicioDoDia; AdicionarMinutos(t, duracaoTotal) <= fechamento.Value;
-             t = AdicionarMinutos(t, intervalo))
+        // A conta anda em minutos do dia, e não em TimeOnly: TimeOnly.AddMinutes dá a volta
+        // na meia-noite, e com fechamento perto dela (23:30, 23:59) "t + duração" voltava
+        // para a madrugada, continuava <= fechamento e o laço nunca terminava.
+        var minutoDeFechamento = (int)fechamento.Value.ToTimeSpan().TotalMinutes;
+        for (var minuto = (int)inicioDoDia.ToTimeSpan().TotalMinutes;
+             minuto + duracaoTotal <= minutoDeFechamento;
+             minuto += Math.Max(1, intervalo))
         {
+            var t = TimeOnly.FromTimeSpan(TimeSpan.FromMinutes(minuto));
             var atribuicoes = MontarCadeia(
                 sequencia, habilitados, t, data, PodeAtender, modoDeOcupacao,
                 (itemId, usuarioId, ini, fim) => itemId is { } id
@@ -670,8 +675,7 @@ public class DisponibilidadeService
         }
 
         var diaDaSemana = data.DayOfWeek;
-        var horarioEmpresa = await _db.HorariosFuncionamento.AsNoTracking()
-            .FirstOrDefaultAsync(h => h.DiaDaSemana == diaDaSemana, ct);
+        var horarioEmpresa = await HorarioDaEmpresaAsync(diaDaSemana, ct);
         var excecaoEmpresa = await _db.ExcecoesHorarioFuncionamento.AsNoTracking()
             .FirstOrDefaultAsync(e => e.Data == data, ct);
 
@@ -928,10 +932,9 @@ public class DisponibilidadeService
             return atendentes;
         }
 
-        var executores = await _db.ExecutoresDeServico
-            .AsNoTracking()
+        var executores = (await TodosOsExecutoresAsync(ct))
             .Where(e => itensIds.Contains(e.ItemCatalogoId))
-            .ToListAsync(ct);
+            .ToList();
 
         if (executores.Count == 0)
         {
@@ -995,13 +998,38 @@ public class DisponibilidadeService
         return livres;
     }
 
-    private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct) =>
-        await _db.Usuarios
+    private async Task<List<Usuario>> AtendentesAsync(long? responsavelId, CancellationToken ct)
+    {
+        _atendentes ??= await _db.Usuarios
             .AsNoTracking()
             .Where(u => u.Ativo && u.Atendente && !u.ConvitePendente)
-            .Where(u => responsavelId == null || u.Id == responsavelId)
             .OrderBy(u => u.Nome)
             .ToListAsync(ct);
+
+        return _atendentes.Where(u => responsavelId == null || u.Id == responsavelId).ToList();
+    }
+
+    // ------------------------------------------------------------------------------
+    // A configuração da agenda (funcionamento, jornadas, quem presta o quê, turmas e o
+    // time) não muda no meio de uma requisição, e a grade a relia a cada dia calculado:
+    // uma semana, um mês ou as sugestões de 30 dias viravam centenas de consultas iguais.
+    // Fica lida uma vez por instância — o serviço é por requisição. O que muda dia a dia
+    // (agendamentos, exceções, ausências) continua sendo lido a cada dia.
+    // ------------------------------------------------------------------------------
+    private List<HorarioFuncionamento>? _funcionamento;
+    private List<HorarioStaff>? _jornadas;
+    private List<Usuario>? _atendentes;
+    private List<ExecutorDeServico>? _executores;
+    private Dictionary<long, int>? _capacidades;
+
+    private async Task<HorarioFuncionamento?> HorarioDaEmpresaAsync(DayOfWeek dia, CancellationToken ct)
+    {
+        _funcionamento ??= await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
+        return _funcionamento.FirstOrDefault(h => h.DiaDaSemana == dia);
+    }
+
+    private async Task<List<ExecutorDeServico>> TodosOsExecutoresAsync(CancellationToken ct) =>
+        _executores ??= await _db.ExecutoresDeServico.AsNoTracking().ToListAsync(ct);
 
     /// <summary>
     /// O turno vem junto: quando a pessoa segue escala, é dele que saem os horários, e
@@ -1021,7 +1049,7 @@ public class DisponibilidadeService
 
     /// <summary>Capacidade de cada serviço. 1 é atendimento individual.</summary>
     private async Task<Dictionary<long, int>> CapacidadesAsync(CancellationToken ct) =>
-        await _db.ItensCatalogo.AsNoTracking()
+        _capacidades ??= await _db.ItensCatalogo.AsNoTracking()
             .Where(i => i.CapacidadeTurma > 1)
             .ToDictionaryAsync(i => i.Id, i => i.CapacidadeTurma, ct);
 
@@ -1047,11 +1075,14 @@ public class DisponibilidadeService
         return contagem;
     }
 
-    private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct) =>
-        await _db.HorariosStaff.AsNoTracking()
+    private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct)
+    {
+        _jornadas ??= await _db.HorariosStaff.AsNoTracking()
             .Include(h => h.Turno)
-            .Where(h => h.DiaDaSemana == dia)
             .ToListAsync(ct);
+
+        return _jornadas.Where(h => h.DiaDaSemana == dia).ToList();
+    }
 
     private async Task<List<ExcecaoHorarioStaff>> AusenciasAsync(DateOnly data, CancellationToken ct) =>
         await _db.ExcecoesHorarioStaff.AsNoTracking().Where(e => e.Data == data).ToListAsync(ct);

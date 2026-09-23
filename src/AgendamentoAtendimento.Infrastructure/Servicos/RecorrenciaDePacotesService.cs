@@ -243,6 +243,10 @@ public class RecorrenciaDePacotesService
 
             if (!pacote.EhRecorrente)
             {
+                // O pacote acabou, e o cliente sai dele junto. Ficar "ativo" num pacote
+                // encerrado o impedia de entrar em qualquer outro (CLIENTE_JA_TEM_PACOTE e
+                // o índice único de vínculo ativo), sem ciclo aberto para usar aqui.
+                vinculo.Ativo = false;
                 continue;
             }
 

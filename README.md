@@ -36,6 +36,10 @@ dotnet run --project src/AgendamentoAtendimento.Api
 Em `Development` a API aplica as migrations no start e semeia um tenant de demonstração
 (`Banco:SemearDemo`). Swagger em `/swagger`, health check em `/health`.
 
+`PaginaPublica:BaseUrl` é o endereço do painel web: o link da página pública que o dono
+compartilha sai como `{BaseUrl}/p/{slug}`. Vazio, a Api usa o próprio host — o que só
+serve quando o painel é servido pela mesma origem.
+
 ```bash
 dotnet test           # 26 testes
 ```

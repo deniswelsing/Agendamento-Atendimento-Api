@@ -267,6 +267,36 @@ public class CobrancaServiceTests : IAsyncLifetime
         Assert.Equal("E1234567", cobranca.TransacaoExternaId);
         Assert.Equal(MeioDeCaptura.PixQr, (await _db.Pagamentos.SingleAsync()).Meio);
     }
+
+    /// <summary>
+    /// O app caiu com a maquininha na mão e a cobrança passou do prazo sem que ninguém
+    /// rodasse a expiração. Ela não pode mais ser concluída nem cancelada — e contá-la
+    /// como "em andamento" prendia a venda para sempre, sem cobrança nova possível.
+    /// </summary>
+    [Fact]
+    public async Task Cobranca_vencida_esquecida_nao_prende_a_venda()
+    {
+        var (antiga, _) = await AbrirAsync("toque-1");
+        antiga.ExpiraEm = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+
+        var (nova, jaExistia) = await AbrirAsync("toque-2");
+
+        Assert.False(jaExistia);
+        Assert.NotEqual(antiga.Id, nova.Id);
+        Assert.Equal(StatusCobranca.Expirada, antiga.Status);
+    }
+
+    /// <summary>Espaço nas pontas da chave não pode furar a idempotência.</summary>
+    [Fact]
+    public async Task Chave_com_espacos_devolve_a_mesma_cobranca()
+    {
+        var (primeira, _) = await AbrirAsync("toque-1");
+        var (segunda, jaExistia) = await AbrirAsync("  toque-1 ");
+
+        Assert.True(jaExistia);
+        Assert.Equal(primeira.Id, segunda.Id);
+    }
 }
 
 /// <summary>

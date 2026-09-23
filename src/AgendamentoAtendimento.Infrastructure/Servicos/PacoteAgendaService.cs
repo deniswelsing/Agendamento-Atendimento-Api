@@ -186,8 +186,11 @@ public class PacoteAgendaService
         var alvo = vinculo.Hora;
         var escolhido = alvo is { } hora
             ? dia.Livres
-                .OrderBy(s => Math.Abs(
-                    (TimeOnly.FromDateTime(s.Inicio.UtcDateTime) - hora).Ticks))
+                // Em TimeSpan, e não TimeOnly - TimeOnly: essa subtração dá a volta no
+                // relógio (13:30 - 14:00 = 23:30), e todo encaixe antes da hora combinada
+                // parecia estar a quase um dia dela.
+                .OrderBy(s => (TimeOnly.FromDateTime(s.Inicio.UtcDateTime).ToTimeSpan()
+                               - hora.ToTimeSpan()).Duration())
                 .First()
             : dia.Livres[0];
 

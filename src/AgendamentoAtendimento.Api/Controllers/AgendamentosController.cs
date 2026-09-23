@@ -370,13 +370,26 @@ public class AgendamentosController : ControllerBaseApi
                 "Agendamento concluído ou cancelado não pode ser alterado.", "STATUS_FINAL");
         }
 
+        if (req.ItensIds is null || req.ItensIds.Count == 0)
+        {
+            throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
+        }
+
+        // O cliente vem do pedido: sem conferir, um id qualquer (de outra empresa,
+        // inclusive) ia para a chave estrangeira e o atendimento sumia da agenda.
+        NaoNulo(
+            await _db.Clientes.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
+            "Cliente não encontrado.");
+
         var servicos = await _db.ItensCatalogo
             .Where(i => req.ItensIds.Contains(i.Id) && i.Tipo == TipoItem.Servico)
             .ToListAsync(ct);
 
-        if (servicos.Count == 0)
+        // Um id que não é serviço desta empresa derrubava o `First` lá embaixo com 500.
+        if (servicos.Count != req.ItensIds.Distinct().Count())
         {
-            throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
+            throw new RegraDeNegocioException(
+                "Algum serviço não existe ou não é um serviço.", "SERVICO_INVALIDO");
         }
 
         var inicio = req.Inicio.ToUniversalTime();

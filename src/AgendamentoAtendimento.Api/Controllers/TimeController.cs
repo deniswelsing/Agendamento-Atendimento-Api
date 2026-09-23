@@ -77,6 +77,7 @@ public class TimeController : ControllerBaseApi
         var perfil = NaoNulo(
             await _db.Perfis.FirstOrDefaultAsync(p => p.Id == req.PerfilId, ct),
             "Perfil não encontrado.");
+        ExigirAdministradorPara(perfil.Administrador);
 
         var podeAdicionar = await _assinaturas.PodeAdicionarUsuarioAsync(ct);
         if (!podeAdicionar.Ok)
@@ -112,6 +113,7 @@ public class TimeController : ControllerBaseApi
         var usuario = NaoNulo(
             await _db.Usuarios.Include(u => u.Perfil).FirstOrDefaultAsync(u => u.Id == id, ct),
             "Usuário não encontrado.");
+        ExigirAdministradorPara(usuario.Perfil?.Administrador == true);
 
         if (!string.IsNullOrWhiteSpace(req.Nome))
         {
@@ -124,6 +126,7 @@ public class TimeController : ControllerBaseApi
                 await _db.Perfis.FirstOrDefaultAsync(p => p.Id == perfilId, ct),
                 "Perfil não encontrado.");
 
+            ExigirAdministradorPara(perfil.Administrador);
             await GarantirQueSobraAdminAsync(usuario, perfil, ct);
             usuario.PerfilId = perfil.Id;
             usuario.Perfil = perfil;
@@ -173,12 +176,29 @@ public class TimeController : ControllerBaseApi
                 "Você não pode remover o próprio acesso.", "AUTO_REMOCAO");
         }
 
+        ExigirAdministradorPara(usuario.Perfil?.Administrador == true);
+
         await GarantirQueSobraAdminAsync(usuario, null, ct);
 
         // Exclusão lógica: a trilha de auditoria e os agendamentos antigos continuam válidos.
         _db.Usuarios.Remove(usuario);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Só um administrador dá o perfil de administrador, ou mexe em quem já o tem.
+    /// Sem isto, quem tem apenas `time.editar` se promovia a administrador (a permissão
+    /// coringa) trocando o próprio perfil — ou rebaixava e desativava os administradores.
+    /// </summary>
+    private void ExigirAdministradorPara(bool envolveAdministrador)
+    {
+        if (envolveAdministrador && !Permissoes.Permite(PermissoesDoUsuario, Permissoes.Coringa))
+        {
+            throw new RegraDeNegocioException(
+                "Só um administrador pode conceder o perfil de administrador ou alterar um administrador.",
+                "SO_ADMINISTRADOR");
+        }
     }
 
     /// <summary>Um tenant nunca pode ficar sem administrador ativo.</summary>

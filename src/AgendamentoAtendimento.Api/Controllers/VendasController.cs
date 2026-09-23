@@ -100,6 +100,7 @@ public class VendasController : ControllerBaseApi
             await _db.Clientes.FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
             "Cliente não encontrado.");
 
+        await ValidarPedidoAsync(req, ct);
         var agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
 
         var venda = new Venda
@@ -141,6 +142,13 @@ public class VendasController : ControllerBaseApi
             throw new RegraDeNegocioException(
                 "Venda paga ou cancelada não pode ser alterada.", "STATUS_FINAL");
         }
+
+        // O cliente vem do pedido: sem conferir, um id qualquer (inclusive de outra
+        // empresa) ia direto para a chave estrangeira — e a venda sumia da listagem.
+        NaoNulo(
+            await _db.Clientes.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
+            "Cliente não encontrado.");
+        await ValidarPedidoAsync(req, ct);
 
         // Trocar o agendamento da venda solta o antigo e prende o novo. O antigo é
         // carregado sem a checagem de "já faturado": quem o faturou foi esta venda.
@@ -194,6 +202,16 @@ public class VendasController : ControllerBaseApi
             throw new RegraDeNegocioException("Venda cancelada não recebe pagamento.", "STATUS_FINAL");
         }
 
+        if (req.Valor <= 0)
+        {
+            throw new RegraDeNegocioException("O valor do pagamento deve ser positivo.", "VALOR_INVALIDO");
+        }
+
+        NaoNulo(
+            await _db.FormasPagamento.AsNoTracking()
+                .FirstOrDefaultAsync(f => f.Id == req.FormaPagamentoId, ct),
+            "Forma de pagamento não encontrada.");
+
         _vendas.RecalcularTotais(venda);
         if (req.Valor > venda.SaldoAberto)
         {
@@ -216,6 +234,15 @@ public class VendasController : ControllerBaseApi
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct),
             "Venda não encontrada.");
+
+        // Finalizar é um passo só, a partir da venda aberta. Repetir baixava o estoque de
+        // novo a cada chamada, e numa venda cancelada ou estornada a trazia de volta a
+        // "aguardando pagamento".
+        if (venda.Status != StatusVenda.Aberta)
+        {
+            throw new RegraDeNegocioException(
+                "Só uma venda aberta pode ser finalizada.", "STATUS_INVALIDO");
+        }
 
         _vendas.RecalcularTotais(venda);
         venda.Status = venda.SaldoAberto <= 0 ? StatusVenda.Paga : StatusVenda.AguardandoPagamento;
@@ -248,6 +275,19 @@ public class VendasController : ControllerBaseApi
         {
             throw new RegraDeNegocioException(
                 "Estorne os recebimentos antes de cancelar a venda.", "VENDA_COM_PAGAMENTO");
+        }
+
+        // Com a maquininha ou o QR ainda na mão do cliente, cancelar agora deixaria a
+        // aprovação que chegar depois lançar o pagamento — e reabrir a venda cancelada.
+        var agora = DateTimeOffset.UtcNow;
+        if (await _db.Cobrancas.AnyAsync(
+                c => c.VendaId == venda.Id
+                     && (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
+                     && c.ExpiraEm > agora, ct))
+        {
+            throw new RegraDeNegocioException(
+                "Esta venda tem uma cobrança em andamento. Conclua ou cancele a cobrança antes.",
+                "VENDA_COM_COBRANCA");
         }
 
         venda.Status = StatusVenda.Cancelada;
@@ -306,6 +346,45 @@ public class VendasController : ControllerBaseApi
             await _db.Agendamentos.Include(a => a.Itens)
                 .FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
+    }
+
+    /// <summary>
+    /// O que o pedido pode mandar sem virar dinheiro inventado ou erro de banco: valores
+    /// não negativos e vendedores que existem nesta empresa.
+    /// </summary>
+    private async Task ValidarPedidoAsync(VendaRequest req, CancellationToken ct)
+    {
+        if (req.Itens is null || req.Itens.Count == 0)
+        {
+            throw new RegraDeNegocioException("A venda precisa de ao menos um item.", "SEM_ITENS");
+        }
+
+        if (req.DescontoGeral < 0 || req.Itens.Any(i => i.DescontoValor < 0))
+        {
+            throw new RegraDeNegocioException("O desconto não pode ser negativo.", "DESCONTO_INVALIDO");
+        }
+
+        if (req.Itens.Any(i => i.PrecoUnitario is < 0))
+        {
+            throw new RegraDeNegocioException("O preço não pode ser negativo.", "PRECO_INVALIDO");
+        }
+
+        var vendedores = req.Itens.Select(i => i.VendedorId)
+            .Append(req.VendedorId)
+            .OfType<long>()
+            .Distinct()
+            .ToList();
+        if (vendedores.Count == 0)
+        {
+            return;
+        }
+
+        var existentes = await _db.Usuarios.AsNoTracking()
+            .CountAsync(u => vendedores.Contains(u.Id), ct);
+        if (existentes != vendedores.Count)
+        {
+            throw new RegraDeNegocioException("Vendedor não encontrado.", "VENDEDOR_INVALIDO");
+        }
     }
 
     private async Task PreencherItensAsync(

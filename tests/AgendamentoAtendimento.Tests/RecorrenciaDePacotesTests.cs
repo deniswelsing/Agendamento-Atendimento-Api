@@ -218,6 +218,31 @@ public class RecorrenciaDePacotesTests : IAsyncLifetime
         Assert.Empty(await _db.CiclosDePacote.Where(c => c.Ciclo == 2).ToListAsync());
     }
 
+    /// <summary>
+    /// O pacote avulso acabou, e o cliente sai dele. Ficar "ativo" num pacote encerrado
+    /// o impedia de entrar em qualquer outro (CLIENTE_JA_TEM_PACOTE), para sempre.
+    /// </summary>
+    [Fact]
+    public async Task Pacote_avulso_encerrado_solta_o_cliente()
+    {
+        var (_, vinculo, _) = await MontarAsync(RecorrenciaDePacote.Nenhuma, Hoje.AddDays(-1));
+
+        await _servico.VarrerAsync(Hoje);
+
+        Assert.False((await _db.PacoteClientes.FirstAsync(c => c.Id == vinculo.Id)).Ativo);
+    }
+
+    /// <summary>Com recorrência o cliente segue no pacote: o ciclo seguinte é dele.</summary>
+    [Fact]
+    public async Task Pacote_recorrente_mantem_o_cliente_na_virada()
+    {
+        var (_, vinculo, _) = await MontarAsync(RecorrenciaDePacote.Mensal, Hoje.AddDays(-1));
+
+        await _servico.VarrerAsync(Hoje);
+
+        Assert.True((await _db.PacoteClientes.FirstAsync(c => c.Id == vinculo.Id)).Ativo);
+    }
+
     /// <summary>Varrer duas vezes no mesmo dia não vira o ciclo duas vezes.</summary>
     [Fact]
     public async Task Varrer_de_novo_nao_vira_o_ciclo_outra_vez()

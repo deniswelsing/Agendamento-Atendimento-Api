@@ -224,6 +224,10 @@ public class PaginaPublicaService
                 "Informe seu telefone."), null);
         }
 
+        // O mesmo serviço duas vezes contaria a duração dobrada na grade e simples no
+        // agendamento gravado: a conta tem de ser uma só.
+        itensIds = itensIds.Distinct().ToList();
+
         var servicos = await ValidarServicosAsync(itensIds, ct);
         if (servicos is null)
         {
@@ -286,7 +290,11 @@ public class PaginaPublicaService
             CodigoPublico = CodigoDeAcesso.Gerar(),
         };
 
-        foreach (var servico in servicos)
+        // Na ordem pedida e cada um na sua etapa: é a sequência que a grade validou. Sem
+        // `Ordem`, todos caíam na etapa 0 — "ao mesmo tempo" —, e a pessoa ficava presa só
+        // pelo serviço mais longo, com o resto do atendimento livre para outro cliente.
+        var ordem = 0;
+        foreach (var servico in itensIds.Select(id => servicos.First(s => s.Id == id)))
         {
             agendamento.Itens.Add(new AgendamentoItem
             {
@@ -294,6 +302,8 @@ public class PaginaPublicaService
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
+                Ordem = ordem++,
+                ResponsavelId = responsavel,
             });
         }
 
