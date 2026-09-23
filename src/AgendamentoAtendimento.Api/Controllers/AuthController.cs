@@ -69,11 +69,22 @@ public class AuthController : ControllerBase
 
         var usuarios = await consulta.ToListAsync(ct);
         // Mensagem única para não revelar se o e-mail existe.
-        var usuario = usuarios.FirstOrDefault(u => HashSenha.Confere(req.Senha, u.SenhaHash));
-        if (usuario is null)
+        var conferem = usuarios.Where(u => HashSenha.Confere(req.Senha, u.SenhaHash)).ToList();
+        if (conferem.Count == 0)
         {
             return Unauthorized(new ErroApi("Credenciais inválidas.", "CREDENCIAIS"));
         }
+
+        // O mesmo e-mail e a mesma senha em duas empresas: sem a empresa, entrar na
+        // primeira que o banco devolvesse punha a pessoa no lugar errado sem avisar.
+        if (conferem.Select(u => u.TenantId).Distinct().Count() > 1)
+        {
+            return BadRequest(new ErroApi(
+                "Este acesso existe em mais de uma empresa. Informe a empresa para entrar.",
+                "EMPRESA_OBRIGATORIA"));
+        }
+
+        var usuario = conferem[0];
 
         var tenant = await _db.Tenants.FirstAsync(t => t.Id == usuario.TenantId, ct);
         _contexto.AssumirTenant(tenant.Id, tenant.Slug);

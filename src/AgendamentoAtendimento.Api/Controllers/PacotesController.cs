@@ -66,6 +66,7 @@ public class PacotesController : ControllerBaseApi
         PacoteModeloRequest req, CancellationToken ct)
     {
         ValidarModelo(req);
+        await GarantirServicosAsync(req.ItensIds, ct);
 
         var modelo = new PacoteModelo
         {
@@ -92,6 +93,7 @@ public class PacotesController : ControllerBaseApi
         var modelo = NaoNulo(
             await _db.PacoteModelos.FirstOrDefaultAsync(m => m.Id == id, ct),
             "Modelo de pacote não encontrado.");
+        await GarantirServicosAsync(req.ItensIds, ct);
 
         modelo.Nome = req.Nome.Trim();
         modelo.Descricao = req.Descricao?.Trim();
@@ -166,6 +168,8 @@ public class PacotesController : ControllerBaseApi
             throw new RegraDeNegocioException(
                 "O pacote precisa de ao menos um serviço.", "PACOTE_SEM_SERVICO");
         }
+
+        await GarantirServicosAsync(itensIds, ct);
 
         var inicio = req.InicioDoCicloAtual ?? Hoje;
         var pacote = new Pacote
@@ -246,6 +250,8 @@ public class PacotesController : ControllerBaseApi
                 "CLIENTE_JA_TEM_PACOTE");
         }
 
+        await GarantirProfissionalAsync(req.ResponsavelPreferidoId, ct);
+
         var vinculo = new PacoteCliente
         {
             PacoteId = pacote.Id, ClienteId = cliente.Id,
@@ -275,6 +281,7 @@ public class PacotesController : ControllerBaseApi
     public async Task<ActionResult<IReadOnlyList<PropostaDePacoteDto>>> Propostas(
         long pacoteClienteId, [FromQuery] DateOnly? apartirDe, CancellationToken ct = default)
     {
+        await GarantirVinculoAsync(pacoteClienteId, ct);
         var propostas = await _agenda.ProporAsync(pacoteClienteId, apartirDe ?? Hoje, ct);
 
         return Ok(propostas.Select(p => new PropostaDePacoteDto(
@@ -429,6 +436,9 @@ public class PacotesController : ControllerBaseApi
     public async Task<ActionResult<CicloDoClienteDto>> Sair(
         long pacoteClienteId, CancellationToken ct)
     {
+        // Sem isto, o id de outra empresa respondia 204 — nada mudava, mas a rota dizia
+        // que tinha dado certo.
+        await GarantirVinculoAsync(pacoteClienteId, ct);
         var ciclo = await _recorrencia.EncerrarVinculoAsync(pacoteClienteId, Hoje, ct);
         if (ciclo is null)
         {
@@ -516,6 +526,40 @@ public class PacotesController : ControllerBaseApi
             req.PrecoPorCliente > 0 ? req.PrecoPorCliente : modelo.Preco,
             req.Recorrencia != RecorrenciaDePacote.Nenhuma ? req.Recorrencia : modelo.Recorrencia,
             itens);
+    }
+
+    /// <summary>
+    /// Todo id de serviço que vai ser gravado existe nesta empresa. O filtro de tenant
+    /// esconde na leitura, mas não impede gravar: sem esta conferência o pacote de uma
+    /// empresa guardava o serviço de outra e o mostrava vazio.
+    /// </summary>
+    private async Task GarantirServicosAsync(IReadOnlyList<long> itensIds, CancellationToken ct)
+    {
+        var distintos = itensIds.Distinct().ToList();
+        var existem = await _db.ItensCatalogo.AsNoTracking()
+            .CountAsync(i => distintos.Contains(i.Id) && i.Tipo == TipoItem.Servico, ct);
+        if (existem != distintos.Count)
+        {
+            throw new RegraDeNegocioException(
+                "Algum serviço não existe ou não é um serviço.", "SERVICO_INVALIDO");
+        }
+    }
+
+    /// <summary>O profissional preferido é alguém do time desta empresa.</summary>
+    private async Task GarantirProfissionalAsync(long? usuarioId, CancellationToken ct)
+    {
+        if (usuarioId is { } id && !await _db.Usuarios.AsNoTracking().AnyAsync(u => u.Id == id, ct))
+        {
+            throw new NaoEncontradoException("Profissional não encontrado.");
+        }
+    }
+
+    private async Task GarantirVinculoAsync(long pacoteClienteId, CancellationToken ct)
+    {
+        if (!await _db.PacoteClientes.AsNoTracking().AnyAsync(c => c.Id == pacoteClienteId, ct))
+        {
+            throw new NaoEncontradoException("Cliente do pacote não encontrado.");
+        }
     }
 
     private async Task TrocarItensDoModeloAsync(

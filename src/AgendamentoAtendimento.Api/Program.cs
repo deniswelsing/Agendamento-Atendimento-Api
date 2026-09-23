@@ -1,4 +1,5 @@
 using AgendamentoAtendimento.Api.Jobs;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Serialization;
 using AgendamentoAtendimento.Api.Autenticacao;
@@ -9,6 +10,7 @@ using AgendamentoAtendimento.Infrastructure.Servicos;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -132,9 +134,26 @@ builder.Services.AddCors(opcoes => opcoes.AddDefaultPolicy(politica =>
 
 builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
 
+// JSON comprime muito: a agenda de um mês cai de ~430 KB para ~18 KB. Faz diferença no
+// celular em 4G, que é onde o app Android e o painel mais rodam.
+builder.Services.AddResponseCompression(opcoes =>
+{
+    opcoes.EnableForHttps = true;
+    opcoes.Providers.Add<BrotliCompressionProvider>();
+    opcoes.Providers.Add<GzipCompressionProvider>();
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
 var app = builder.Build();
 
 app.UseMiddleware<TratamentoDeErroMiddleware>();
+
+// Fora das rotas de autenticação: resposta com token e corpo comprimido juntos abrem a
+// porta para ataques do tipo BREACH, e o ganho ali é nenhum.
+app.UseWhen(
+    http => !http.Request.Path.StartsWithSegments("/api/auth"),
+    ramo => ramo.UseResponseCompression());
 
 if (app.Environment.IsDevelopment())
 {
