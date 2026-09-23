@@ -1,9 +1,11 @@
+using System.Text;
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,12 +22,15 @@ public class AssinaturaController : ControllerBaseApi
     private readonly AppDbContext _db;
     private readonly AssinaturaService _assinaturas;
     private readonly IConfiguration _config;
+    private readonly ContextoAtual _contexto;
 
-    public AssinaturaController(AppDbContext db, AssinaturaService assinaturas, IConfiguration config)
+    public AssinaturaController(
+        AppDbContext db, AssinaturaService assinaturas, IConfiguration config, ContextoAtual contexto)
     {
         _db = db;
         _assinaturas = assinaturas;
         _config = config;
+        _contexto = contexto;
     }
 
     [HttpGet("planos")]
@@ -170,41 +175,127 @@ public class AssinaturaController : ControllerBaseApi
         }
 
         var assinatura = NaoNulo(await _assinaturas.ObterAtualAsync(ct), "Assinatura não encontrada.");
-        assinatura.Gateway = GatewayPagamento.GooglePlay;
 
+        // A compra de assento no Play é a quantidade de ADICIONAIS: o total contratado é
+        // o que o plano inclui mais o que foi comprado. É um dos dois caminhos (o outro é
+        // o webhook do Paddle) que aumentam assentos.
+        ResultadoAssinatura resultado;
         if (string.Equals(req.TipoCompra, "ASSENTO", StringComparison.OrdinalIgnoreCase))
         {
             assinatura.PlayPurchaseTokenAssentos = req.PurchaseToken;
             var incluidos = assinatura.Plano?.UsuariosIncluidos ?? 1;
-            assinatura.AssentosContratados = incluidos + Math.Max(0, req.Quantidade);
+            (resultado, _) = await _assinaturas.AplicarCompraConfirmadaAsync(
+                GatewayPagamento.GooglePlay, null, null, incluidos + Math.Max(0, req.Quantidade), ct);
         }
         else
         {
             assinatura.PlayPurchaseTokenPlano = req.PurchaseToken;
-            if (req.PlanoId is { } planoId)
-            {
-                assinatura.PlanoId = planoId;
-            }
-            if (req.Ciclo is { } ciclo)
-            {
-                assinatura.Ciclo = ciclo;
-            }
+            (resultado, _) = await _assinaturas.AplicarCompraConfirmadaAsync(
+                GatewayPagamento.GooglePlay, req.PlanoId, req.Ciclo, null, ct);
         }
 
-        assinatura.Status = StatusAssinatura.Ativa;
-        await _db.SaveChangesAsync(ct);
+        if (!resultado.Ok)
+        {
+            throw new RegraDeNegocioException(
+                resultado.Mensagem ?? "Não foi possível aplicar a compra.", resultado.Motivo.ToString());
+        }
 
         var recarregada = await _assinaturas.ObterAtualAsync(ct);
         var emUso = await _assinaturas.AssentosEmUsoAsync(ct);
         return Ok(recarregada!.ParaDto(emUso, await PlanosAtivosAsync(ct)));
     }
 
+    /// <summary>
+    /// Webhook do Paddle. É por aqui — e só por aqui, do lado do Paddle — que a compra
+    /// feita no checkout vira plano, ciclo e assentos. A assinatura do cabeçalho
+    /// `Paddle-Signature` é conferida com `Paddle:WebhookSecret`; sem segredo configurado a
+    /// rota recusa tudo. Evento repetido (mesmo `event_id`) responde 200 sem reaplicar.
+    /// </summary>
+    [HttpPost("paddle/webhook")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ReceberWebhookPaddle(CancellationToken ct)
+    {
+        using var leitor = new StreamReader(Request.Body, Encoding.UTF8);
+        var corpo = await leitor.ReadToEndAsync(ct);
+
+        var segredo = _config["Paddle:WebhookSecret"];
+        if (!WebhookPaddle.AssinaturaValida(
+                Request.Headers["Paddle-Signature"].FirstOrDefault(), corpo, segredo, DateTimeOffset.UtcNow))
+        {
+            return Unauthorized(new ErroApi("Assinatura do webhook inválida.", "WEBHOOK_INVALIDO"));
+        }
+
+        var evento = WebhookPaddle.Ler(corpo);
+        if (evento is null)
+        {
+            return BadRequest(new ErroApi("Evento do Paddle ilegível.", "WEBHOOK_ILEGIVEL"));
+        }
+
+        // O webhook não tem usuário nem tenant no token: o tenant vem do `custom_data` que o
+        // próprio backend pôs na transação, ou da assinatura já ligada ao Paddle.
+        var tenantId = evento.TenantId;
+        if (tenantId is null && evento.SubscriptionId is { } sub)
+        {
+            _contexto.IgnorarFiltroDeTenant = true;
+            tenantId = await _db.Assinaturas.AsNoTracking()
+                .Where(a => a.PaddleSubscriptionId == sub).Select(a => (long?)a.TenantId)
+                .FirstOrDefaultAsync(ct);
+            _contexto.IgnorarFiltroDeTenant = false;
+        }
+
+        if (!await _assinaturas.RegistrarEventoAsync(
+                GatewayPagamento.Paddle, evento.EventoId, evento.Tipo, corpo, tenantId, ct))
+        {
+            return Ok(); // já recebido: o Paddle só precisa saber que chegou
+        }
+
+        var registro = await _db.EventosGateway
+            .FirstAsync(e => e.Gateway == GatewayPagamento.Paddle && e.EventoExternoId == evento.EventoId, ct);
+
+        if (!evento.ConfirmaCompra || tenantId is not { } tenant)
+        {
+            // Outros eventos (falha de cobrança, cancelamento…) ficam gravados, sem
+            // processamento automático por enquanto.
+            return Ok();
+        }
+
+        _contexto.AssumirTenant(tenant);
+        var (resultado, assinatura) = await _assinaturas.AplicarCompraConfirmadaAsync(
+            GatewayPagamento.Paddle, evento.PlanoId, evento.Ciclo, evento.Assentos, ct);
+
+        if (assinatura is not null)
+        {
+            assinatura.PaddleSubscriptionId = evento.SubscriptionId ?? assinatura.PaddleSubscriptionId;
+            assinatura.PaddleCustomerId = evento.CustomerId ?? assinatura.PaddleCustomerId;
+        }
+
+        registro.AssinaturaId = assinatura?.Id;
+        registro.Processado = resultado.Ok;
+        registro.ProcessadoEm = DateTimeOffset.UtcNow;
+        registro.Erro = resultado.Ok ? null : resultado.Mensagem;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok();
+    }
+
+    /// <summary>
+    /// Reduz os assentos contratados (nunca abaixo dos em uso nem dos inclusos no plano).
+    /// Aumentar responde 402 `ASSENTOS_EXIGEM_PAGAMENTO`: assento a mais é compra, e entra
+    /// pelo checkout do Paddle ou pelo Google Play.
+    /// </summary>
     [HttpPut("assentos")]
     [RequerPermissao("assinatura.alterar")]
     public async Task<ActionResult<AssinaturaDto>> AlterarAssentos(
         AlterarAssentosRequest req, CancellationToken ct)
     {
         var (resultado, assinatura) = await _assinaturas.AlterarAssentosAsync(req.Assentos, ct);
+        if (resultado.Motivo == MotivoRecusa.AssentosExigemPagamento)
+        {
+            throw new AssinaturaExigidaException(
+                resultado.Mensagem ?? "Assentos adicionais precisam ser comprados.",
+                resultado.Motivo, "ASSENTOS_EXIGEM_PAGAMENTO");
+        }
+
         if (!resultado.Ok || assinatura is null)
         {
             throw new RegraDeNegocioException(
@@ -223,9 +314,16 @@ public class AssinaturaController : ControllerBaseApi
     /// Chamada real ao Paddle. Fica isolada para que o resto do fluxo seja testável sem
     /// rede; a configuração vive em `Paddle:*`.
     /// </summary>
+    /// <remarks>
+    /// Quem implementar: a transação TEM de levar o `custom_data` de
+    /// <see cref="WebhookPaddle.DadosDaCompra"/> (tenant, plano, ciclo e o total de
+    /// assentos). É dele que o webhook tira o que aplicar — sem ele, a compra é paga e os
+    /// assentos não sobem.
+    /// </remarks>
     private Task<PaddleCheckoutDto> CriarTransacaoPaddleAsync(
         Plano plano, PaddleCheckoutRequest req, int assentos, DetalhePreco detalhe, CancellationToken ct)
     {
+        _ = WebhookPaddle.DadosDaCompra(TenantId, plano.Id, req.Ciclo, assentos);
         _ = plano;
         _ = assentos;
         _ = detalhe;

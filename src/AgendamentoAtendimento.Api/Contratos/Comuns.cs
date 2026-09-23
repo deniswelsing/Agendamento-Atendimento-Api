@@ -25,6 +25,17 @@ public sealed record LoginResponse(
     string AccessToken, string? RefreshToken, long ExpiresInSeconds,
     UsuarioDto Usuario, TenantDto Tenant);
 
+/// <summary>O que a tela de aceite mostra antes de pedir a senha.</summary>
+public sealed record ConviteDto(string Nome, string Email, string Empresa, DateTimeOffset? ExpiraEm);
+
+public sealed record AceitarConviteRequest(string Token, string Senha, string? Produto = null);
+
+/// <summary>
+/// O app irmão (PetShop.Route ↔ Agendamento) entrega o refresh token que tem para abrir
+/// uma sessão própria, sem gastar o dele.
+/// </summary>
+public sealed record SessaoIrmaRequest(string RefreshToken, string? Produto);
+
 // ---------------------------------------------------------------------- clientes
 public sealed record ClienteDto(
     long ClienteId, TipoCliente TipoCliente, string? Nome, string? Sobrenome,
@@ -227,7 +238,11 @@ public sealed record PagamentoDto(
     /// <summary>false = o líquido é previsão; a adquirente ainda não confirmou a taxa.</summary>
     bool TaxaConferida,
     decimal DivergenciaDaTaxa,
-    string? Nsu, string? Bandeira, string? UltimosDigitos, string? AdquirenteChave);
+    string? Nsu, string? Bandeira, string? UltimosDigitos, string? AdquirenteChave,
+    /// <summary>true quando o recebimento foi estornado; ele não entra no total pago.</summary>
+    bool Estornado = false,
+    DateTimeOffset? EstornadoEm = null,
+    string? MotivoEstorno = null);
 
 public sealed record VendaDto(
     long VendaId, long ClienteId, string ClienteNome, StatusVenda Status,
@@ -251,6 +266,8 @@ public sealed record VendaRequest(
     long? VendedorId = null);
 
 public sealed record PagamentoRequest(long FormaPagamentoId, decimal Valor, int Parcelas = 1, string? Autorizacao = null);
+
+public sealed record EstornarPagamentoRequest(string? Motivo = null);
 
 // ---------------------------------------------------------------------- cobrança
 public sealed record CobrancaDto(
@@ -468,7 +485,14 @@ public sealed record AusenciaStaffRequest(
 public sealed record MembroTimeDto(
     long UsuarioId, string Nome, string Email, long PerfilId, string PerfilNome,
     bool IsAtivo, bool OcupaAssento, bool ConvitePendente, bool Atendente,
-    string? FotoUrl, DateTimeOffset? UltimoLoginEm);
+    string? FotoUrl, DateTimeOffset? UltimoLoginEm,
+    /// <summary>
+    /// Link de aceite do convite. Só vem na resposta de convidar e de reenviar o convite:
+    /// o token não fica guardado em claro, então depois disso ninguém mais o vê. Não há
+    /// envio de e-mail — quem convidou copia o link e o manda à pessoa.
+    /// </summary>
+    string? UrlConvite = null,
+    DateTimeOffset? ConviteExpiraEm = null);
 
 public sealed record ConvidarMembroRequest(string Nome, string Email, long PerfilId, bool Atendente = true);
 

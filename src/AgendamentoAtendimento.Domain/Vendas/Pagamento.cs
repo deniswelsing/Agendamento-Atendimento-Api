@@ -94,4 +94,14 @@ public class Pagamento : EntidadeDeTenant
     public DateTimeOffset? ConciliadoEm { get; set; }
 
     public string? Observacao { get; set; }
+
+    /// <summary>
+    /// Quando o recebimento foi estornado (status <see cref="StatusPagamento.Estornado"/>).
+    /// O lançamento não é apagado: o estorno é história, e o caixa precisa dela.
+    /// </summary>
+    public DateTimeOffset? EstornadoEm { get; set; }
+
+    public string? MotivoEstorno { get; set; }
+
+    public bool Estornado => Status == StatusPagamento.Estornado;
 }

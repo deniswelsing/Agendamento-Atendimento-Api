@@ -130,6 +130,142 @@ public class AuthController : ControllerBase
         return Ok(MontarResposta(token.Usuario, tenant, produto, novo));
     }
 
+    /// <summary>
+    /// Abre uma sessão própria para o app irmão a partir do refresh token que ele recebeu
+    /// pelo compartilhamento de sessão (ContentProvider do Android). O token apresentado é
+    /// só CONFERIDO — não é revogado nem rotacionado —, e sai um par novo e independente
+    /// para o produto que pediu.
+    ///
+    /// Existe porque o refresh roda o token a cada uso: com os dois apps dividindo o mesmo,
+    /// quem renovava primeiro revogava o do outro e o derrubava da sessão. Cada app chama
+    /// isto uma vez, fica com o seu par, e dali em diante renova só o seu.
+    /// </summary>
+    [HttpPost("sessao-irma")]
+    public async Task<ActionResult<LoginResponse>> SessaoIrma(SessaoIrmaRequest req, CancellationToken ct)
+    {
+        var produto = ProdutoDaRequisicao(
+            req.Produto ?? Request.Headers[ContextoMiddleware.CabecalhoProduto].FirstOrDefault());
+        var hash = HashSenha.HashDeToken(req.RefreshToken ?? string.Empty);
+
+        _contexto.IgnorarFiltroDeTenant = true;
+        var token = await _db.RefreshTokens.AsNoTracking()
+            .Include(t => t.Usuario!).ThenInclude(u => u.Perfil!).ThenInclude(p => p.Permissoes)
+            .FirstOrDefaultAsync(t => t.TokenHash == hash, ct);
+
+        if (token?.Usuario is null || !token.Ativo || !token.Usuario.Ativo)
+        {
+            return Unauthorized(new ErroApi("Sessão expirada. Entre novamente.", "REFRESH_INVALIDO"));
+        }
+
+        var tenant = await _db.Tenants.FirstAsync(t => t.Id == token.TenantId, ct);
+        _contexto.AssumirTenant(tenant.Id, tenant.Slug);
+        _contexto.UsuarioId = token.UsuarioId;
+        _contexto.IgnorarFiltroDeTenant = false;
+
+        // Nenhuma escrita no token apresentado: ele continua valendo para o app que o tem.
+        var novo = await EmitirRefreshAsync(token.Usuario, produto, ct);
+        return Ok(MontarResposta(token.Usuario, tenant, produto, novo));
+    }
+
+    /// <summary>
+    /// O convite por trás do link: quem convidou, para qual empresa, até quando vale. É o
+    /// que a tela de aceite mostra antes de pedir a senha. Token desconhecido, vencido ou
+    /// já usado respondem igual: 404.
+    /// </summary>
+    [HttpGet("convite/{token}")]
+    public async Task<ActionResult<ConviteDto>> Convite(string token, CancellationToken ct)
+    {
+        var convidado = await ConvitePendenteAsync(token, ct);
+        if (convidado is null)
+        {
+            return ConviteInvalido();
+        }
+
+        var empresa = await _db.Tenants.AsNoTracking()
+            .Where(t => t.Id == convidado.TenantId).Select(t => t.NomeEmpresa).FirstAsync(ct);
+
+        return Ok(new ConviteDto(convidado.Nome, convidado.Email, empresa, convidado.ConviteExpiraEm));
+    }
+
+    /// <summary>
+    /// Aceita o convite: grava a senha, gasta o token (uso único) e já entra — a resposta é
+    /// a mesma do login.
+    /// </summary>
+    [HttpPost("convite/aceitar")]
+    public async Task<ActionResult<LoginResponse>> AceitarConvite(AceitarConviteRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Senha) || req.Senha.Length < TamanhoMinimoDaSenha)
+        {
+            return BadRequest(new ErroApi(
+                $"A senha precisa ter ao menos {TamanhoMinimoDaSenha} caracteres.", "SENHA_FRACA"));
+        }
+
+        var usuario = await ConvitePendenteAsync(req.Token, ct);
+        if (usuario is null)
+        {
+            return ConviteInvalido();
+        }
+
+        var produto = ProdutoDaRequisicao(
+            req.Produto ?? Request.Headers[ContextoMiddleware.CabecalhoProduto].FirstOrDefault());
+
+        var tenant = await _db.Tenants.FirstAsync(t => t.Id == usuario.TenantId, ct);
+        _contexto.AssumirTenant(tenant.Id, tenant.Slug);
+        _contexto.UsuarioId = usuario.Id;
+
+        usuario.SenhaHash = HashSenha.Gerar(req.Senha);
+        usuario.TokenConvite = null;
+        usuario.ConviteExpiraEm = null;
+        usuario.ConvitePendente = false;
+        usuario.Ativo = true;
+        usuario.UltimoLoginEm = DateTimeOffset.UtcNow;
+        usuario.UltimoLoginIp = _contexto.Ip;
+
+        // Grava a senha e o refresh juntos: EmitirRefreshAsync salva tudo que está pendente.
+        var refresh = await EmitirRefreshAsync(usuario, produto, ct);
+        return Ok(MontarResposta(usuario, tenant, produto, refresh));
+    }
+
+    /// <summary>Tamanho mínimo da senha definida no aceite do convite.</summary>
+    public const int TamanhoMinimoDaSenha = 8;
+
+    /// <summary>
+    /// O usuário dono de um convite ainda válido. O banco guarda o SHA-256 do token, e a
+    /// busca é pelo hash — igualdade exata, sem comparar o segredo em si. Convites gerados
+    /// antes do hash (token em claro na coluna) ainda são achados pelo valor exato, com
+    /// diferença de maiúsculas e minúsculas.
+    /// </summary>
+    private async Task<Usuario?> ConvitePendenteAsync(string? token, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length > 200)
+        {
+            return null;
+        }
+
+        var hash = HashSenha.HashDeToken(token);
+        var agora = DateTimeOffset.UtcNow;
+
+        // O link não diz a empresa: a busca é em todas, e o filtro volta logo depois.
+        _contexto.IgnorarFiltroDeTenant = true;
+        try
+        {
+            return await _db.Usuarios
+                .Include(u => u.Perfil!).ThenInclude(p => p.Permissoes)
+                .Where(u => u.ConvitePendente && u.Ativo && u.ConviteExpiraEm > agora)
+                .Where(u => u.TokenConvite == hash || u.TokenConvite == token)
+                .FirstOrDefaultAsync(ct);
+        }
+        finally
+        {
+            _contexto.IgnorarFiltroDeTenant = false;
+        }
+    }
+
+    private NotFoundObjectResult ConviteInvalido() =>
+        NotFound(new ErroApi(
+            "Convite inválido, vencido ou já usado. Peça um novo a quem convidou você.",
+            "CONVITE_INVALIDO"));
+
     [HttpPost("logout")]
     [Authorize]
     public async Task<IActionResult> Logout(CancellationToken ct)

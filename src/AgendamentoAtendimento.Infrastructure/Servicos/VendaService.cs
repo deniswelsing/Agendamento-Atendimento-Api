@@ -237,6 +237,37 @@ public class VendaService
     }
 
     /// <summary>
+    /// Estorna um recebimento confirmado: o lançamento fica, marcado como estornado, com
+    /// data e motivo; o total pago e o saldo são refeitos; e a venda que estava paga volta
+    /// a aguardar pagamento. Uma venda aberta continua aberta. É o que destrava o
+    /// cancelamento de uma venda que já recebeu.
+    ///
+    /// Vale também para o que entrou por cobrança (maquininha, Pix, gateway): aqui é só o
+    /// registro — não há integração que devolva o dinheiro na adquirente ou no PSP; a
+    /// devolução em si é feita lá, por quem opera o caixa.
+    /// </summary>
+    public void EstornarPagamento(Venda venda, Pagamento pagamento, string? motivo)
+    {
+        ArgumentNullException.ThrowIfNull(venda);
+        ArgumentNullException.ThrowIfNull(pagamento);
+
+        if (pagamento.Status != StatusPagamento.Confirmado)
+        {
+            throw new InvalidOperationException("Só um recebimento confirmado pode ser estornado.");
+        }
+
+        pagamento.Status = StatusPagamento.Estornado;
+        pagamento.EstornadoEm = DateTimeOffset.UtcNow;
+        pagamento.MotivoEstorno = string.IsNullOrWhiteSpace(motivo) ? null : motivo.Trim();
+
+        RecalcularTotais(venda);
+        if (venda.Status == StatusVenda.Paga && venda.SaldoAberto > 0)
+        {
+            venda.Status = StatusVenda.AguardandoPagamento;
+        }
+    }
+
+    /// <summary>
     /// Monta o lançamento com a taxa que a configuração prevê. Enquanto a adquirente não
     /// confirmar, `TaxaConferida` fica falso: o líquido é previsão, não fato.
     /// </summary>

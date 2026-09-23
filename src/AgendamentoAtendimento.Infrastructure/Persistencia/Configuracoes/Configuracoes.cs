@@ -391,7 +391,9 @@ public class PagamentoConfig : IEntityTypeConfiguration<Pagamento>
         b.Property(p => p.Bandeira).HasMaxLength(40);
         b.Property(p => p.UltimosDigitos).HasMaxLength(4);
         b.Property(p => p.AdquirenteChave).HasMaxLength(40);
+        b.Property(p => p.MotivoEstorno).HasMaxLength(500);
         b.Ignore(p => p.DivergenciaDaTaxa);
+        b.Ignore(p => p.Estornado);
         b.HasOne(p => p.FormaPagamento).WithMany().HasForeignKey(p => p.FormaPagamentoId)
             .OnDelete(DeleteBehavior.Restrict);
         b.HasIndex(p => new { p.TenantId, p.Status });

@@ -330,6 +330,10 @@ public class PacotesController : ControllerBaseApi
                 "FORA_DO_CICLO");
         }
 
+        // Saldo e agenda conferidos sob a trava: dois toques em "marcar" ao mesmo tempo
+        // gastavam a mesma sessão duas vezes, ou punham a pessoa em dois lugares.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         var marcados = await _db.Agendamentos.CountAsync(
             a => a.PacoteClienteId == vinculo.Id && a.PacoteCiclo == ciclo.Ciclo
                  && a.Status != StatusAgendamento.Cancelado, ct);
@@ -418,6 +422,7 @@ public class PacotesController : ControllerBaseApi
 
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         var completo = await _db.Agendamentos.AsNoTracking()
             .Include(a => a.Cliente).Include(a => a.Responsavel)

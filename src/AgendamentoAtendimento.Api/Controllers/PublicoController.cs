@@ -45,6 +45,11 @@ public class PublicoController : ControllerBase
             return PaginaInexistente();
         }
 
+        if (!await _paginas.AssinaturaEmDiaAsync(Agora, ct))
+        {
+            return PaginaIndisponivel();
+        }
+
         var empresa = await _db.Tenants.AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == pagina.TenantId, ct);
 
@@ -97,6 +102,11 @@ public class PublicoController : ControllerBase
             return PaginaInexistente();
         }
 
+        if (!await _paginas.AssinaturaEmDiaAsync(Agora, ct))
+        {
+            return PaginaIndisponivel();
+        }
+
         var (resultado, dia) = await _paginas.DisponibilidadeAsync(
             pagina, data, itensIds ?? Array.Empty<long>(), responsavelId, Agora, ct);
 
@@ -117,6 +127,11 @@ public class PublicoController : ControllerBase
         if (pagina is null)
         {
             return PaginaInexistente();
+        }
+
+        if (!await _paginas.AssinaturaEmDiaAsync(Agora, ct))
+        {
+            return PaginaIndisponivel();
         }
 
         var (resultado, agendamento) = await _paginas.AgendarAsync(
@@ -258,6 +273,18 @@ public class PublicoController : ControllerBase
     /// </summary>
     private NotFoundObjectResult PaginaInexistente() =>
         NotFound(new ErroApi("Página de agendamento não encontrada.", "NAO_ENCONTRADO"));
+
+    /// <summary>
+    /// A empresa está com a assinatura parada: a página não mostra horários nem aceita
+    /// pedido novo. É 503, e não 402, de propósito — quem abre a página é o cliente da
+    /// empresa, e não é ele quem tem de pagar nada. Consultar, confirmar e desmarcar pelo
+    /// código continuam funcionando: quem já marcou não perde o acesso ao que marcou.
+    /// </summary>
+    private ObjectResult PaginaIndisponivel() =>
+        StatusCode(StatusCodes.Status503ServiceUnavailable, new ErroApi(
+            "A agenda online desta empresa está temporariamente indisponível. " +
+            "Entre em contato diretamente com a empresa para marcar.",
+            "PAGINA_INDISPONIVEL"));
 
     private ObjectResult Recusa(ResultadoPublico r)
     {

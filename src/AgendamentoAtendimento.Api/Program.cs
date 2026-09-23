@@ -38,6 +38,8 @@ builder.Services.AddScoped<RelogioDoTenant>();
 
 builder.Services.AddScoped<DisponibilidadeService>();
 builder.Services.AddScoped<AssinaturaService>();
+// O retrato da assinatura por tenant, para a checagem que roda em toda requisição.
+builder.Services.AddSingleton<CacheDeAssinatura>();
 builder.Services.AddScoped<VendaService>();
 builder.Services.AddScoped<CobrancaService>();
 builder.Services.AddScoped<PaginaPublicaService>();
@@ -165,6 +167,9 @@ app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<ContextoMiddleware>();
 app.UseAuthorization();
+// Depois da autorização: sem token o 401 vem antes; com token, a assinatura precisa
+// estar em dia em toda rota que não é de entrar, pagar ou da página pública.
+app.UseMiddleware<AssinaturaEmDiaMiddleware>();
 
 app.MapControllers();
 app.MapHealthChecks("/health").AllowAnonymous();

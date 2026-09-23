@@ -96,11 +96,16 @@ dela, então não existe perfil "cego que edita".
 **Assinatura compartilhada com o PetShop.Route.** O cabeçalho `X-Produto` diz qual produto
 está chamando; a tabela `assinatura_produtos` diz quais produtos o plano cobre. Os assentos
 são contados uma vez só para a suíte, e o mesmo refresh token troca de produto em
-`POST /api/auth/refresh`.
+`POST /api/auth/refresh`. O app irmão que recebe a sessão pelo ContentProvider chama
+`POST /api/auth/sessao-irma` uma vez para ganhar um par de tokens próprio — o refresh roda o
+token a cada uso, e dividir um só fazia um app derrubar o outro.
 
 **402 é um código de negócio.** Assinatura inativa, produto não coberto ou time sem assento
 livre respondem `402 Payment Required` com o motivo. É por esse status que o app abre a
-tela de compra de assento.
+tela de compra de assento. A assinatura é conferida em **toda** rota autenticada (402
+`ASSINATURA_INATIVA`), menos as de entrar, do bootstrap, de pagar e a página pública; e
+aumentar assentos pelo `PUT /api/assinatura/assentos` responde 402
+`ASSENTOS_EXIGEM_PAGAMENTO` — assento a mais só entra pelo checkout.
 
 ## Endpoints
 
@@ -108,22 +113,23 @@ Documentação completa em [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 
 | Área | Rotas |
 |---|---|
-| Autenticação | `POST /api/auth/{login,refresh,logout}` |
+| Autenticação | `POST /api/auth/{login,refresh,sessao-irma,logout}`, `GET /api/auth/convite/{token}`, `POST /api/auth/convite/aceitar` |
 | Bootstrap | `GET /api/bootstrap` — usuário, permissões, telas, time, formas, horários, rótulos |
 | Clientes | CRUD em `/api/clientes` |
 | Catálogo | CRUD em `/api/catalogo/itens` |
 | Agenda | CRUD em `/api/agendamentos` + `/disponibilidade` e `/disponibilidade/periodo` |
-| Vendas | CRUD em `/api/vendas` + `/pagamentos`, `/finalizar` |
+| Vendas | CRUD em `/api/vendas` + `/pagamentos`, `/pagamentos/{id}/estorno`, `/finalizar` |
 | Financeiro | CRUD em `/api/formas-pagamento` |
 | Horários | `/api/horarios/funcionamento`, `/staff` e as exceções de cada um |
-| Time | CRUD em `/api/time/membros` |
+| Time | CRUD em `/api/time/membros` + `/membros/{id}/convite` (link de convite) |
 | Perfis | CRUD em `/api/perfis` + `/catalogo` |
-| Assinatura | `/api/assinatura/{planos,atual,cotacao,assentos}`, Paddle e Google Play |
+| Assinatura | `/api/assinatura/{planos,atual,cotacao,assentos}`, Paddle (checkout e webhook) e Google Play |
 | Painel | `GET /api/dashboard/resumo` |
 
 ## Pendências conhecidas
 
 As chamadas externas dos gateways estão isoladas e **ainda não implementadas**:
 `CriarTransacaoPaddleAsync` e `ValidarCompraPlayAsync` em `AssinaturaController` lançam
-erro explicando o que falta configurar. Todo o resto do fluxo de assinatura (planos,
+erro explicando o que falta configurar (a transação do Paddle precisa levar o `custom_data`
+de `WebhookPaddle.DadosDaCompra`, que o webhook usa para aplicar os assentos comprados). Todo o resto do fluxo de assinatura (planos,
 cotação, assentos, entitlement por produto) está pronto e coberto por testes.

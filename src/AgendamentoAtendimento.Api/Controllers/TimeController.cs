@@ -18,13 +18,18 @@ namespace AgendamentoAtendimento.Api.Controllers;
 [Route("api/time")]
 public class TimeController : ControllerBaseApi
 {
+    /// <summary>Quanto tempo o link de convite vale.</summary>
+    public static readonly TimeSpan ValidadeDoConvite = TimeSpan.FromDays(7);
+
     private readonly AppDbContext _db;
     private readonly AssinaturaService _assinaturas;
+    private readonly IConfiguration? _config;
 
-    public TimeController(AppDbContext db, AssinaturaService assinaturas)
+    public TimeController(AppDbContext db, AssinaturaService assinaturas, IConfiguration? config = null)
     {
         _db = db;
         _assinaturas = assinaturas;
+        _config = config;
     }
 
     [HttpGet("membros")]
@@ -93,15 +98,81 @@ public class TimeController : ControllerBaseApi
             PerfilId = perfil.Id,
             Atendente = req.Atendente,
             ConvitePendente = true,
-            TokenConvite = HashSenha.NovoTokenAleatorio(),
-            ConviteExpiraEm = DateTimeOffset.UtcNow.AddDays(7),
         };
+        var token = NovoConvite(usuario);
 
         _db.Usuarios.Add(usuario);
         await _db.SaveChangesAsync(ct);
 
         usuario.Perfil = perfil;
-        return CreatedAtAction(nameof(Obter), new { id = usuario.Id }, usuario.ParaDto());
+        return CreatedAtAction(nameof(Obter), new { id = usuario.Id }, ComLink(usuario, token));
+    }
+
+    /// <summary>
+    /// Gera um convite novo para quem ainda não aceitou: o link anterior deixa de valer e a
+    /// validade recomeça. É o "reenviar convite" — e o jeito de recuperar o link, que não
+    /// fica guardado em claro.
+    /// </summary>
+    [HttpPost("membros/{id:long}/convite")]
+    [RequerPermissao("time.convidar")]
+    public async Task<ActionResult<MembroTimeDto>> RenovarConvite(long id, CancellationToken ct)
+    {
+        var usuario = NaoNulo(
+            await _db.Usuarios.Include(u => u.Perfil).FirstOrDefaultAsync(u => u.Id == id, ct),
+            "Usuário não encontrado.");
+
+        // O link entra na conta sem senha nenhuma: gerar o de um administrador é o mesmo
+        // que conceder o perfil, e isso só um administrador faz.
+        ExigirAdministradorPara(usuario.Perfil?.Administrador == true);
+
+        if (!usuario.ConvitePendente || !usuario.Ativo)
+        {
+            throw new RegraDeNegocioException(
+                "Só um convite pendente, de alguém ativo no time, pode ser renovado.",
+                "CONVITE_NAO_PENDENTE");
+        }
+
+        var token = NovoConvite(usuario);
+        await _db.SaveChangesAsync(ct);
+        return Ok(ComLink(usuario, token));
+    }
+
+    /// <summary>
+    /// Gera o token do convite. No banco fica só o SHA-256 dele (como o refresh token):
+    /// quem lê a tabela não aceita o convite de ninguém. O valor em claro existe apenas
+    /// no link devolvido a quem convidou.
+    /// </summary>
+    private static string NovoConvite(Usuario usuario)
+    {
+        var token = HashSenha.NovoTokenAleatorio();
+        usuario.TokenConvite = HashSenha.HashDeToken(token);
+        usuario.ConviteExpiraEm = DateTimeOffset.UtcNow.Add(ValidadeDoConvite);
+        return token;
+    }
+
+    private MembroTimeDto ComLink(Usuario usuario, string token) =>
+        usuario.ParaDto() with
+        {
+            UrlConvite = $"{BaseWeb()}/convite/{Uri.EscapeDataString(token)}",
+            ConviteExpiraEm = usuario.ConviteExpiraEm,
+        };
+
+    /// <summary>
+    /// Onde o painel web está publicado: `Web:BaseUrl`, senão o da página pública (é o
+    /// mesmo painel), senão o endereço desta requisição.
+    /// </summary>
+    private string BaseWeb()
+    {
+        var baseUrl = _config?["Web:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            baseUrl = _config?["PaginaPublica:BaseUrl"];
+        }
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            baseUrl = $"{Request.Scheme}://{Request.Host}";
+        }
+        return baseUrl.TrimEnd('/');
     }
 
     /// <summary>Atribui perfil, renomeia ou ativa/desativa um usuário.</summary>
