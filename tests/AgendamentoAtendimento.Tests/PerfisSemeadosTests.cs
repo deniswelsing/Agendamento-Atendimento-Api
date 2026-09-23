@@ -90,6 +90,19 @@ public class PerfisSemeadosTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// O estorno (`POST /api/vendas/{id}/pagamentos/{pagamentoId}/estorno`) exige
+    /// `financeiro.estornar`: quem cuida do dinheiro estorna, quem atende não.
+    /// </summary>
+    [Fact]
+    public async Task Financeiro_estorna_e_atendimento_nao()
+    {
+        Assert.Contains("financeiro.estornar", await PermissoesDe("Financeiro"));
+        Assert.DoesNotContain("financeiro.estornar", await PermissoesDe("Atendimento"));
+        Assert.DoesNotContain("financeiro.estornar", await PermissoesDe("Atendimento (só o seu)"));
+        Assert.True(Permissoes.Existe("financeiro.estornar"));
+    }
+
+    /// <summary>
     /// A regra que o protótipo demonstra, escrita como invariante: fechar venda anda com
     /// enxergar a agenda do time. Um perfil que fecha sem enxergar fecharia no escuro.
     /// </summary>

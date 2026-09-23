@@ -140,7 +140,8 @@ public static class Mapeamentos
         p.Valor, p.ValorTaxa, p.ValorLiquido, p.Parcela, p.TotalParcelas,
         p.ConfirmadoEm, p.PrevisaoLiquidacao, p.Autorizacao,
         p.Meio, p.ValorTaxaEstimada, p.TaxaConferida, p.DivergenciaDaTaxa,
-        p.Nsu, p.Bandeira, p.UltimosDigitos, p.AdquirenteChave);
+        p.Nsu, p.Bandeira, p.UltimosDigitos, p.AdquirenteChave,
+        p.Estornado, p.EstornadoEm, p.MotivoEstorno);
 
     public static CobrancaDto ParaDto(this Cobranca c, bool jaExistia = false) => new(
         c.Id, c.VendaId, c.Status, c.Meio, c.FormaPagamentoId,

@@ -301,6 +301,10 @@ public class AgendamentosController : ControllerBaseApi
 
         var etapas = Etapas(req.ItensIds, req.EtapasPorItem);
 
+        // Conferir e gravar sob a trava da agenda: sem ela, dois pedidos ao mesmo tempo
+        // passavam os dois pela conferência e a mesma pessoa ficava marcada duas vezes.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         // Quem presta cada serviço: o que veio no pedido, e o resto o servidor resolve.
         // É a mesma conta que montou a grade, então o que a tela ofereceu é o que entra.
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
@@ -350,6 +354,7 @@ public class AgendamentosController : ControllerBaseApi
 
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         // A fila de avisos nasce junto: um agendamento sem lembrete programado é um
         // cliente que ninguém vai avisar.
@@ -402,6 +407,9 @@ public class AgendamentosController : ControllerBaseApi
 
         var etapas = Etapas(req.ItensIds, req.EtapasPorItem);
 
+        // Mover também é gravar na agenda: a mesma trava do criar.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         // Ignora o próprio agendamento na conta: reagendar para o mesmo horário não pode
         // esbarrar no compromisso que está sendo movido.
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
@@ -444,6 +452,7 @@ public class AgendamentosController : ControllerBaseApi
         }
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         // Remarcar invalida o lembrete antigo: ele aponta para uma hora que não existe
         // mais. Morre um, nasce outro — e o cliente não recebe aviso da hora errada.
@@ -627,6 +636,9 @@ public class AgendamentosController : ControllerBaseApi
 
         var janela = agendamento.Janelas().First(j => j.Item.Id == itemId);
 
+        // Trocar quem presta ocupa a agenda de outra pessoa: confere e grava sob a trava.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         if (req.ResponsavelId is { } novo)
         {
             await ValidarEscolhasAsync(
@@ -647,6 +659,7 @@ public class AgendamentosController : ControllerBaseApi
         agendamento.ResponsavelId = primeiro.ResponsavelId ?? agendamento.ResponsavelId;
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         var completo = await CarregarAsync(id, ct);
         return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));

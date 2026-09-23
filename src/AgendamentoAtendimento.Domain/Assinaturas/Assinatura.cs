@@ -46,9 +46,17 @@ public class Assinatura : Entidade
     public ICollection<AssinaturaProduto> Produtos { get; set; } = new List<AssinaturaProduto>();
 
     /// <summary>Libera o uso do app, considerando o período de graça.</summary>
-    public bool LiberaAcesso =>
-        Status == StatusAssinatura.Ativa ||
-        (Status == StatusAssinatura.EmPeriodoDeGraca && FimPeriodoDeGraca > DateTimeOffset.UtcNow);
+    public bool LiberaAcesso => Libera(Status, FimPeriodoDeGraca, DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// A regra de "está em dia", separada da entidade para quem guarda só o retrato da
+    /// assinatura (o cache da checagem por requisição) decidir exatamente igual: ativa, ou
+    /// em período de graça que ainda não acabou. Pendente, suspensa, cancelada e expirada
+    /// não liberam.
+    /// </summary>
+    public static bool Libera(StatusAssinatura status, DateTimeOffset? fimPeriodoDeGraca, DateTimeOffset agora) =>
+        status == StatusAssinatura.Ativa ||
+        (status == StatusAssinatura.EmPeriodoDeGraca && fimPeriodoDeGraca > agora);
 
     public int AssentosAdicionais(Plano plano) =>
         Math.Max(0, AssentosContratados - plano.UsuariosIncluidos);

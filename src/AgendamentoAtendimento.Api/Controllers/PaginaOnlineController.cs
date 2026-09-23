@@ -171,6 +171,10 @@ public class PaginaOnlineController : ControllerBaseApi
     private async Task<ActionResult<AgendamentoDto>> ResolverAsync(
         long id, StatusAgendamento destino, string? motivo, CancellationToken ct)
     {
+        // O pedido já segura o horário, mas resolver sob a trava da agenda impede que ele
+        // seja aprovado no meio de uma remarcação ou de outra gravação do mesmo horário.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         var agendamento = NaoNulo(
             await _db.Agendamentos
                 .Include(a => a.Cliente).Include(a => a.Responsavel).Include(a => a.Itens)
@@ -186,6 +190,7 @@ public class PaginaOnlineController : ControllerBaseApi
         agendamento.Status = destino;
         agendamento.MotivoCancelamento = destino == StatusAgendamento.Cancelado ? motivo : null;
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         return Ok(agendamento.ParaDto());
     }

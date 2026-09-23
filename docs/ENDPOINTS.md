@@ -22,16 +22,74 @@ Erros voltam como `{ "message": "...", "code": "..." }`.
 | **402** | assinatura inativa, produto não coberto ou **time sem assento livre** |
 | 404 | registro não encontrado |
 
+### Assinatura em dia, em toda rota
+
+Toda rota autenticada confere a assinatura da empresa — não só o bootstrap. Com ela
+**parada** (pendente, suspensa, cancelada, expirada, ou em período de graça que já
+acabou), a resposta é **402** com `code: ASSINATURA_INATIVA`; com o produto do
+`X-Produto` fora da assinatura, **402** `PRODUTO_NAO_COBERTO`. Período de graça ainda
+vigente libera normalmente. Empresa sem assinatura nenhuma passa (vale o plano de entrada,
+como no bootstrap).
+
+Continuam abertas com a assinatura parada, para dar para entrar e pagar:
+`/api/auth/**`, `/api/bootstrap` (que tem a checagem dela), `/api/assinatura/**`,
+`/api/publico/**` (regra própria, abaixo), `/health` e `/swagger`.
+
+A leitura da assinatura fica num cache por empresa de 30 s, esquecido na hora quando a
+assinatura muda pela Api (assentos, compra confirmada, webhook). Mudança feita direto no
+banco ou por outra instância leva até 30 s para valer.
+
 ## Autenticação
 
 ```
-POST /api/auth/login    { login, senha, tenantSlug?, produto? }  -> LoginResponse
-POST /api/auth/refresh  { refreshToken, produto? }               -> LoginResponse
+POST /api/auth/login             { login, senha, tenantSlug?, produto? }  -> LoginResponse
+POST /api/auth/refresh           { refreshToken, produto? }               -> LoginResponse
+POST /api/auth/sessao-irma       { refreshToken, produto? }               -> LoginResponse
+GET  /api/auth/convite/{token}                                            -> { nome, email, empresa, expiraEm }
+POST /api/auth/convite/aceitar   { token, senha, produto? }               -> LoginResponse
 POST /api/auth/logout
 ```
 
 `LoginResponse.usuario` já traz `permissoes` e `telasVisiveis` — é o que o app usa para
 montar a navegação.
+
+### Sessão do app irmão (Android ↔ PetShop.Route)
+
+`POST /api/auth/refresh` **roda** o token: o usado é revogado e sai outro. Com os dois apps
+dividindo o mesmo refresh token (o ContentProvider do Android), quem renovava primeiro
+derrubava o outro.
+
+`POST /api/auth/sessao-irma` resolve isso: recebe o refresh token compartilhado, **só
+confere** (não revoga nem roda) e devolve um par **novo e independente** — access token e
+refresh token próprios — para o produto que pediu (`produto` no corpo, senão o cabeçalho
+`X-Produto`, senão `agendamento-atendimento`; o mesmo critério do login). O app que
+recebeu a sessão chama isto **uma vez**, guarda o par dele e dali em diante renova só o
+seu com `/refresh`. Token revogado, vencido ou desconhecido: **401** `REFRESH_INVALIDO`.
+
+### Convite
+
+`POST /api/time/membros` cria o membro com o convite pendente e devolve, **só nessa
+resposta**, `urlConvite` (`{Web:BaseUrl | PaginaPublica:BaseUrl | host da requisição}/convite/{token}`)
+e `conviteExpiraEm` (7 dias). Não há envio de e-mail: quem convidou copia o link e o
+entrega à pessoa. O banco guarda só o SHA-256 do token — perdeu o link, gere outro:
+
+```
+POST /api/time/membros/{id}/convite   -> MembroTimeDto com urlConvite novo (time.convidar)
+```
+
+Renovar invalida o link anterior e recomeça a validade. Só vale para convite pendente de
+alguém ativo (`CONVITE_NAO_PENDENTE`); o de um administrador só um administrador renova
+(`SO_ADMINISTRADOR`).
+
+A tela `/convite/{token}` do painel usa as duas rotas anônimas:
+
+- `GET /api/auth/convite/{token}` mostra quem foi convidado e para qual empresa.
+- `POST /api/auth/convite/aceitar` grava a senha (mínimo **8** caracteres, senão **400**
+  `SENHA_FRACA`), gasta o token, tira o convite de pendente e já entra — a resposta é a do
+  login.
+
+Token desconhecido, vencido, já usado (uso único) ou de usuário desativado: **404**
+`CONVITE_INVALIDO`. O token é comparado exato (maiúsculas contam).
 
 ## Bootstrap
 
@@ -71,6 +129,7 @@ planos.
 | `GET /api/vendas` | `vendas.ver` |
 | `POST /api/vendas` | `vendas.criar` |
 | `POST /api/vendas/{id}/pagamentos` | `financeiro.receber` |
+| `POST /api/vendas/{id}/pagamentos/{pagamentoId}/estorno` | `financeiro.estornar` |
 | `POST /api/vendas/{id}/finalizar` | `vendas.finalizar` |
 | `DELETE /api/vendas/{id}` | `vendas.cancelar` |
 | `GET /api/formas-pagamento` | `financeiro.ver` |
@@ -81,7 +140,7 @@ planos.
 | `PUT /api/pagina-online`, `PUT .../servicos/{id}` | `pagina-online.editar` |
 | `POST /api/pagina-online/pendentes/{id}/**` | `pagina-online.aprovar` |
 | `GET /api/time/membros` | `time.ver` |
-| `POST /api/time/membros` | `time.convidar` |
+| `POST /api/time/membros`, `POST /api/time/membros/{id}/convite` | `time.convidar` |
 | `PUT /api/time/membros/{id}` | `time.editar` |
 | `DELETE /api/time/membros/{id}` | `time.remover` |
 | `GET /api/perfis` | `perfis.ver` |
@@ -90,9 +149,11 @@ planos.
 | `PUT /api/assinatura/assentos`, checkouts | `assinatura.alterar` |
 
 `GET /api/perfis/catalogo`, `GET /api/bootstrap` e `GET /api/assinatura/recursos` exigem
-só estar autenticado. `GET/POST/DELETE /api/publico/{slug}/**` é a única família de rotas
-que responde **sem token** — quem a protege é o slug, o plano do tenant e as regras da
-página, não a autenticação.
+só estar autenticado. `GET/POST/DELETE /api/publico/{slug}/**` é a família de rotas que
+responde **sem token** — quem a protege é o slug, o plano do tenant e as regras da
+página, não a autenticação. Também são anônimas as de entrar (`/api/auth/login`,
+`/refresh`, `/sessao-irma`, `/convite/**`) e o webhook do Paddle
+(`POST /api/assinatura/paddle/webhook`), protegido pela assinatura HMAC.
 
 ### Recursos exigidos por rota
 
@@ -135,6 +196,30 @@ com o responsável do agendamento; `POST /api/vendas` aceita `vendedorId` para m
 As vendas anteriores a esta mudança ficaram com comissão zero e sem vendedor, de
 propósito: copiar o percentual atual do catálogo inventaria uma comissão que ninguém
 acordou na época.
+
+### Estorno e cancelamento
+
+```
+POST /api/vendas/{vendaId}/pagamentos/{pagamentoId}/estorno   { motivo? }  -> VendaDto
+```
+
+Cancelar (`DELETE /api/vendas/{id}`) continua exigindo que nenhum recebimento esteja
+confirmado (`VENDA_COM_PAGAMENTO`) — e agora há como chegar lá. O estorno marca o
+pagamento como `Estornado` (ele continua na lista, com `estornado: true`, `estornadoEm` e
+`motivoEstorno`), refaz `totalPago` e `saldoAberto`, e a venda **paga** volta a
+`AguardandoPagamento` (a aberta continua aberta). Estornado todo, a venda cancela.
+
+Recusas: estornar de novo o mesmo recebimento é **400** `PAGAMENTO_JA_ESTORNADO`; um
+recebimento que não está confirmado, **400** `PAGAMENTO_NAO_CONFIRMADO`; motivo com mais
+de 500 caracteres, **400** `MOTIVO_LONGO`; pagamento de outra venda, **404**.
+
+O que entrou por cobrança (maquininha, Pix, gateway) se estorna igual, **só no registro**:
+não há integração de estorno com adquirente ou PSP — a devolução do dinheiro é feita lá.
+
+Cancelar uma venda **finalizada** devolve ao estoque o que a finalização baixou. Vendas
+finalizadas antes desta versão não sabem se baixaram (a coluna `estoque_baixado` nasceu
+`false`) e não devolvem nada — melhor que devolver estoque que nunca saiu. Cancelar de novo
+uma venda cancelada responde 204 sem mexer em nada.
 
 ## Cobrança: maquininha, Pix e gateway
 
@@ -245,6 +330,15 @@ pausas dos dois, menos as ausências, menos o que já está agendado — e só e
 o serviço pedido. `POST /api/agendamentos` revalida isso antes de gravar: uma agenda
 desatualizada no app não cria conflito.
 
+**Pedidos ao mesmo tempo.** A revalidação e a gravação acontecem sob uma trava da agenda
+da empresa (`pg_advisory_xact_lock`, uma por tenant, dentro de uma transação): dois pedidos
+simultâneos para o mesmo horário não passam os dois pela conferência — o segundo espera o
+primeiro gravar e aí recebe `HORARIO_INDISPONIVEL` (ou `RESPONSAVEL_INDISPONIVEL`). Vale
+para todo caminho que grava ou move um agendamento: `POST` e `PUT /api/agendamentos`,
+`PATCH .../itens/{itemId}/responsavel`, `POST /api/publico/{slug}/agendamentos`, marcar
+pelo pacote e aprovar/recusar pedido da página. Medido com 10 `POST` paralelos no mesmo
+horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora entra 1.
+
 ## Página de agendamento online
 
 O cliente marca sozinho, num endereço público, sem conta e sem token.
@@ -286,6 +380,13 @@ deixaria dois clientes pedirem o mesmo encaixe. Recusar é o que devolve o horá
 
 Recusas: `AntecedenciaInsuficiente`, `ForaDaJanela`, `ServicoIndisponivel`,
 `HorarioIndisponivel`, `DadosIncompletos` (400) e `LimiteDiario` (**429**).
+
+**Assinatura da empresa parada.** `GET /api/publico/{slug}`, `/disponibilidade` e
+`POST .../agendamentos` respondem **503** `PAGINA_INDISPONIVEL` ("a agenda online desta
+empresa está temporariamente indisponível"). É 503, e não 402, de propósito: quem abre a
+página é o cliente da empresa, e não é ele quem tem de pagar. Consultar, confirmar e
+desmarcar pelo código continuam funcionando — quem já marcou não perde o acesso ao que
+marcou. Período de graça vigente mantém a página aberta.
 
 ### Quem presta cada serviço
 
@@ -342,10 +443,38 @@ GET  /api/assinatura/planos
 GET  /api/assinatura/recursos
 GET  /api/assinatura/atual
 POST /api/assinatura/cotacao        { planoId, ciclo, assentos }
-PUT  /api/assinatura/assentos       { assentos }
-POST /api/assinatura/paddle/checkout
+PUT  /api/assinatura/assentos       { assentos }              -> só REDUZ
+POST /api/assinatura/paddle/checkout      { planoId, ciclo, assentos, returnUrl }
+POST /api/assinatura/paddle/webhook       (Paddle → Api, anônimo, assinado)
 POST /api/assinatura/google-play/confirmar
 ```
+
+### Assentos: reduzir é direto, aumentar é compra
+
+`PUT /api/assinatura/assentos` **só reduz**. Pedir mais do que o contratado responde
+**402** `ASSENTOS_EXIGEM_PAGAMENTO`, com a mensagem mandando comprar pelo checkout — antes,
+qualquer um com `assinatura.alterar` subia os assentos até o teto do plano sem pagar.
+Reduzir nunca fica abaixo dos assentos em uso nem dos inclusos no plano: pedir menos
+reduz até esse piso (o mesmo "ajusta ao mínimo" que a rota sempre fez), e o corpo da
+resposta traz o número que ficou.
+
+Assento só aumenta pelos caminhos de pagamento:
+
+- **Paddle**: `POST /api/assinatura/paddle/checkout` já leva `assentos` (o total
+  desejado). A transação criada leva no `custom_data` `tenant_id`, `plano_id`, `ciclo` e
+  `assentos`, e é o webhook que aplica. O webhook confere `Paddle-Signature`
+  (`ts=...;h1=...`, HMAC-SHA256 de `"{ts}:{corpo}"` com `Paddle:WebhookSecret`, até 5 min
+  de diferença — sem segredo configurado, recusa tudo com **401** `WEBHOOK_INVALIDO`), é
+  idempotente pelo `event_id` e aplica plano, ciclo, assentos e status `Ativa` em
+  `transaction.completed`/`transaction.paid` e em `subscription.created|activated|updated`
+  com status `active`. Os outros eventos ficam gravados em `eventos_gateway`, sem
+  processamento automático por enquanto.
+- **Google Play**: `POST /api/assinatura/google-play/confirmar` com `tipoCompra: "ASSENTO"`
+  contrata os inclusos do plano mais a `quantidade` comprada.
+
+Nos dois, passar do limite do plano é recusado sem gravar nada. A criação da transação no
+Paddle e a validação no Google Play continuam por implementar nesta instalação
+(`PADDLE_NAO_IMPLEMENTADO`, `PLAY_NAO_IMPLEMENTADO`).
 
 Preços em **USD**. A cotação é a fonte da verdade:
 

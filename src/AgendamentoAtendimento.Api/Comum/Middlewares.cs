@@ -64,7 +64,7 @@ public class TratamentoDeErroMiddleware
         catch (AssinaturaExigidaException ex)
         {
             await EscreverAsync(http, HttpStatusCode.PaymentRequired,
-                new ErroApi(ex.Message, ex.Motivo.ToString()));
+                new ErroApi(ex.Message, ex.Codigo ?? ex.Motivo.ToString()));
         }
         catch (RegraDeNegocioException ex)
         {
@@ -117,8 +117,18 @@ public class NaoEncontradoException : Exception
 /// <summary>Assinatura inativa, produto não coberto ou sem assento livre.</summary>
 public class AssinaturaExigidaException : Exception
 {
-    public AssinaturaExigidaException(string mensagem, MotivoRecusa motivo) : base(mensagem)
-        => Motivo = motivo;
+    public AssinaturaExigidaException(string mensagem, MotivoRecusa motivo, string? codigo = null)
+        : base(mensagem)
+    {
+        Motivo = motivo;
+        Codigo = codigo;
+    }
 
     public MotivoRecusa Motivo { get; }
+
+    /// <summary>
+    /// Código que vai no corpo do 402. Nulo usa o nome do motivo, como sempre foi — as
+    /// recusas novas trazem o seu (`ASSENTOS_EXIGEM_PAGAMENTO`, `ASSINATURA_INATIVA`).
+    /// </summary>
+    public string? Codigo { get; }
 }

@@ -107,6 +107,18 @@ public class PaginaPublicaService
         return pagina;
     }
 
+    /// <summary>
+    /// A empresa da página está com a assinatura em dia? Com ela parada, a página não
+    /// oferece horário nem aceita pedido novo — marcar um atendimento que a empresa não vai
+    /// conseguir nem ver no app é pior do que não marcar. Sem assinatura nenhuma vale o
+    /// plano de entrada, como no resto da Api. Chamar depois de <see cref="AssumirPorSlugAsync"/>.
+    /// </summary>
+    public async Task<bool> AssinaturaEmDiaAsync(DateTimeOffset agora, CancellationToken ct = default)
+    {
+        var situacao = await _assinaturas.SituacaoAsync(ct);
+        return !situacao.Existe || situacao.LiberaAcesso(agora);
+    }
+
     /// <summary>Serviços que a página oferece. Só serviço ativo e marcado como visível.</summary>
     public Task<List<ItemCatalogo>> ServicosPublicosAsync(CancellationToken ct = default) =>
         _db.ItensCatalogo.AsNoTracking()
@@ -258,6 +270,12 @@ public class PaginaPublicaService
         }
 
         var emailNormalizado = email.Trim().ToLowerInvariant();
+
+        // Daqui até gravar, sob a trava da agenda: é a porta aberta da Api, e dois
+        // clientes clicando no mesmo horário ao mesmo tempo levavam os dois o horário.
+        // O limite diário também é conferido aqui dentro, pelo mesmo motivo.
+        await using var trava = await _db.TravarAgendaAsync(ct);
+
         if (await EstourouLimiteAsync(pagina, emailNormalizado, agora, ct))
         {
             return (new ResultadoPublico(false, RecusaPublica.LimiteDiario,
@@ -315,6 +333,7 @@ public class PaginaPublicaService
 
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         return (ResultadoPublico.Sucesso, agendamento);
     }

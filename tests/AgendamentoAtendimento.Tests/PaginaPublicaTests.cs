@@ -1,3 +1,6 @@
+using AgendamentoAtendimento.Api.Comum;
+using AgendamentoAtendimento.Api.Contratos;
+using AgendamentoAtendimento.Api.Controllers;
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Catalogo;
@@ -7,6 +10,8 @@ using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -472,5 +477,66 @@ public class PaginaPublicaTests : IAsyncLifetime
 
         Assert.False(segundo.Ok);
         Assert.Equal(RecusaPublica.HorarioIndisponivel, segundo.Motivo);
+    }
+
+    // ------------------------------------------------- assinatura da empresa parada
+
+    /// <summary>
+    /// Com a assinatura da empresa parada, a página não mostra horários nem aceita pedido
+    /// novo (503 `PAGINA_INDISPONIVEL` — quem abre é o cliente, não é ele quem paga). Quem
+    /// já marcou continua consultando pelo código.
+    /// </summary>
+    [Fact]
+    public async Task Assinatura_parada_fecha_a_pagina_mas_nao_o_comprovante()
+    {
+        var (marcado, agendamento) = await AgendarAsync(new DateTimeOffset(2026, 9, 21, 9, 0, 0, TimeSpan.Zero));
+        Assert.True(marcado.Ok);
+
+        _contexto.IgnorarFiltroDeTenant = true;
+        var assinatura = await _db.Assinaturas.FirstAsync(a => a.TenantId == 1);
+        assinatura.Status = StatusAssinatura.Cancelada;
+        await _db.SaveChangesAsync();
+        _contexto.IgnorarFiltroDeTenant = false;
+
+        var controller = new PublicoController(_db, new PaginaPublicaService(
+            _db, _contexto, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc),
+            new AssinaturaService(_db), RelogioDeTeste.Utc))
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+
+        AssertIndisponivel((await controller.Info("empresa-um", default)).Result);
+        AssertIndisponivel((await controller.Disponibilidade(
+            "empresa-um", Segunda, new[] { CorteId }, null, default)).Result);
+        AssertIndisponivel((await controller.Agendar("empresa-um", new NovoAgendamentoPublicoRequest(
+            "Maria", "maria@teste.com", "11999990000", new[] { CorteId },
+            DateTimeOffset.UtcNow.AddDays(3), null, null), default)).Result);
+
+        var comprovante = await controller.Consultar("empresa-um", agendamento!.CodigoPublico!, default);
+        Assert.IsType<OkObjectResult>(comprovante.Result);
+    }
+
+    [Fact]
+    public async Task Periodo_de_graca_mantem_a_pagina_aberta()
+    {
+        _contexto.IgnorarFiltroDeTenant = true;
+        var assinatura = await _db.Assinaturas.FirstAsync(a => a.TenantId == 1);
+        assinatura.Status = StatusAssinatura.EmPeriodoDeGraca;
+        assinatura.FimPeriodoDeGraca = DateTimeOffset.UtcNow.AddDays(2);
+        await _db.SaveChangesAsync();
+        _contexto.IgnorarFiltroDeTenant = false;
+
+        var controller = new PublicoController(_db, new PaginaPublicaService(
+            _db, _contexto, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc),
+            new AssinaturaService(_db), RelogioDeTeste.Utc));
+
+        Assert.IsType<OkObjectResult>((await controller.Info("empresa-um", default)).Result);
+    }
+
+    private static void AssertIndisponivel(ActionResult? resultado)
+    {
+        var objeto = Assert.IsType<ObjectResult>(resultado);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, objeto.StatusCode);
+        Assert.Equal("PAGINA_INDISPONIVEL", Assert.IsType<ErroApi>(objeto.Value).Code);
     }
 }

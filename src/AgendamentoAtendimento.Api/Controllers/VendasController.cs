@@ -230,6 +230,55 @@ public class VendasController : ControllerBaseApi
         return Ok(completa!.ParaDto());
     }
 
+    /// <summary>
+    /// Estorna um recebimento da venda. O pagamento continua listado, marcado como
+    /// estornado; o total pago e o saldo são refeitos, e a venda paga volta a aguardar
+    /// pagamento. Estornar de novo o mesmo recebimento é recusado.
+    /// </summary>
+    /// <remarks>
+    /// O que entrou por cobrança (cartão, Pix) também se estorna aqui, mas só no registro:
+    /// não há integração de estorno com adquirente ou PSP — a devolução do dinheiro é
+    /// feita lá, e esta rota deixa o caixa do sistema igual ao de verdade.
+    /// </remarks>
+    [HttpPost("{vendaId:long}/pagamentos/{pagamentoId:long}/estorno")]
+    [RequerPermissao("financeiro.estornar")]
+    public async Task<ActionResult<VendaDto>> Estornar(
+        long vendaId, long pagamentoId, [FromBody] EstornarPagamentoRequest? req, CancellationToken ct)
+    {
+        var venda = NaoNulo(
+            await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
+                .FirstOrDefaultAsync(v => v.Id == vendaId, ct),
+            "Venda não encontrada.");
+
+        var pagamento = NaoNulo(
+            venda.Pagamentos.FirstOrDefault(p => p.Id == pagamentoId),
+            "Pagamento não encontrado nesta venda.");
+
+        if (pagamento.Status == StatusPagamento.Estornado)
+        {
+            throw new RegraDeNegocioException(
+                "Este recebimento já foi estornado.", "PAGAMENTO_JA_ESTORNADO");
+        }
+
+        if (pagamento.Status != StatusPagamento.Confirmado)
+        {
+            throw new RegraDeNegocioException(
+                "Só um recebimento confirmado pode ser estornado.", "PAGAMENTO_NAO_CONFIRMADO");
+        }
+
+        if (req?.Motivo is { Length: > 500 })
+        {
+            throw new RegraDeNegocioException(
+                "O motivo do estorno pode ter no máximo 500 caracteres.", "MOTIVO_LONGO");
+        }
+
+        _vendas.EstornarPagamento(venda, pagamento, req?.Motivo);
+        await _db.SaveChangesAsync(ct);
+
+        var completa = await CarregarAsync(vendaId, ct);
+        return Ok(completa!.ParaDto());
+    }
+
     [HttpPost("{id:long}/finalizar")]
     [RequerPermissao("vendas.finalizar")]
     public async Task<ActionResult<VendaDto>> Finalizar(long id, CancellationToken ct)
@@ -261,6 +310,8 @@ public class VendasController : ControllerBaseApi
                 produto.Estoque = Math.Max(0, estoque - (int)Math.Ceiling(item.Quantidade));
             }
         }
+        // É isto que o cancelamento consulta para devolver o estoque.
+        venda.EstoqueBaixado = true;
 
         await _db.SaveChangesAsync(ct);
         var completa = await CarregarAsync(id, ct);
@@ -272,9 +323,17 @@ public class VendasController : ControllerBaseApi
     public async Task<IActionResult> Cancelar(long id, CancellationToken ct)
     {
         var venda = NaoNulo(
-            await _db.Vendas.Include(v => v.Pagamentos).FirstOrDefaultAsync(v => v.Id == id, ct),
+            await _db.Vendas.Include(v => v.Pagamentos).Include(v => v.Itens)
+                .FirstOrDefaultAsync(v => v.Id == id, ct),
             "Venda não encontrada.");
 
+        // Cancelar de novo não muda nada — e não pode devolver o estoque duas vezes.
+        if (venda.Status == StatusVenda.Cancelada)
+        {
+            return NoContent();
+        }
+
+        // O estorno é `POST /api/vendas/{id}/pagamentos/{pagamentoId}/estorno`.
         if (venda.Pagamentos.Any(p => p.Status == StatusPagamento.Confirmado))
         {
             throw new RegraDeNegocioException(
@@ -296,6 +355,21 @@ public class VendasController : ControllerBaseApi
 
         venda.Status = StatusVenda.Cancelada;
         venda.CanceladaEm = DateTimeOffset.UtcNow;
+
+        // A finalização baixou o estoque dos produtos; cancelar devolve o que saiu. Sem
+        // isto, cada venda finalizada e cancelada sumia com o produto da prateleira.
+        if (venda.EstoqueBaixado)
+        {
+            foreach (var item in venda.Itens.Where(i => i.Tipo == TipoItem.Produto))
+            {
+                var produto = await _db.ItensCatalogo.FirstOrDefaultAsync(i => i.Id == item.ItemCatalogoId, ct);
+                if (produto?.Estoque is { } estoque)
+                {
+                    produto.Estoque = estoque + (int)Math.Ceiling(item.Quantidade);
+                }
+            }
+            venda.EstoqueBaixado = false;
+        }
 
         // O atendimento volta para a fila de cobrança. Sem soltar o vínculo, um
         // cancelamento deixaria o serviço entregue sem poder ser cobrado nunca mais:

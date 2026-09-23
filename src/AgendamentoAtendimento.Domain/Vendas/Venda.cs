@@ -45,6 +45,13 @@ public class Venda : EntidadeDeTenant
     public DateTimeOffset? FinalizadaEm { get; set; }
     public DateTimeOffset? CanceladaEm { get; set; }
 
+    /// <summary>
+    /// true depois que a finalização baixou o estoque dos produtos. É por ele que o
+    /// cancelamento sabe se tem estoque a devolver — o status não diz: uma venda paga pelo
+    /// recebimento, sem passar pela finalização, nunca baixou nada.
+    /// </summary>
+    public bool EstoqueBaixado { get; set; }
+
     public ICollection<VendaItem> Itens { get; set; } = new List<VendaItem>();
     public ICollection<Pagamento> Pagamentos { get; set; } = new List<Pagamento>();
 
