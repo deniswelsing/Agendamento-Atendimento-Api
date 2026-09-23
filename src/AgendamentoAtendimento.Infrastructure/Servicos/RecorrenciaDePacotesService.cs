@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
@@ -44,8 +45,13 @@ public class RecorrenciaDePacotesService
     public const int DiasDeAviso = 7;
 
     private readonly AppDbContext _db;
+    private readonly RelogioDoTenant _relogio;
 
-    public RecorrenciaDePacotesService(AppDbContext db) => _db = db;
+    public RecorrenciaDePacotesService(AppDbContext db, RelogioDoTenant relogio)
+    {
+        _db = db;
+        _relogio = relogio;
+    }
 
     public async Task<ResultadoDaVarredura> VarrerAsync(
         DateOnly hoje, CancellationToken ct = default)
@@ -141,7 +147,8 @@ public class RecorrenciaDePacotesService
 
         // O que estava marcado para frente volta para a grade: o horário é de outra
         // pessoa agora, e deixá-lo preso seria guardar vaga para quem não vem.
-        var inicioDeHoje = new DateTimeOffset(hoje.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        // "De hoje em diante" começa na meia-noite da empresa, não na de Greenwich.
+        var inicioDeHoje = _relogio.InicioDoDia(hoje);
         var aCancelar = await _db.Agendamentos
             .Where(a => a.PacoteClienteId == vinculo.Id
                         && a.PacoteCiclo == ciclo.Ciclo

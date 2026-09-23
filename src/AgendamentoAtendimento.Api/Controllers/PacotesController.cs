@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Pacotes;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,20 +25,24 @@ public class PacotesController : ControllerBaseApi
     private readonly PacoteAgendaService _agenda;
     private readonly RecorrenciaDePacotesService _recorrencia;
     private readonly DisponibilidadeService _disponibilidade;
+    private readonly RelogioDoTenant _relogio;
 
     public PacotesController(
         AppDbContext db,
         PacoteAgendaService agenda,
         RecorrenciaDePacotesService recorrencia,
-        DisponibilidadeService disponibilidade)
+        DisponibilidadeService disponibilidade,
+        RelogioDoTenant relogio)
     {
         _db = db;
         _agenda = agenda;
         _recorrencia = recorrencia;
         _disponibilidade = disponibilidade;
+        _relogio = relogio;
     }
 
-    private static DateOnly Hoje => DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+    /// <summary>Hoje no calendário da empresa — é nele que os ciclos começam e vencem.</summary>
+    private DateOnly Hoje => _relogio.Hoje();
 
     // ------------------------------------------------------------ modelos
     [HttpGet("modelos")]
@@ -308,7 +313,8 @@ public class PacotesController : ControllerBaseApi
         // Em UTC, como o resto da agenda: o Npgsql recusa gravar DateTimeOffset com outro
         // deslocamento em timestamptz, e o 500 vinha só na hora de salvar.
         var inicio = req.Inicio.ToUniversalTime();
-        var dia = DateOnly.FromDateTime(inicio.UtcDateTime);
+        // O ciclo é de datas da empresa, então o dia da sessão também.
+        var dia = _relogio.DataLocal(inicio);
         if (dia < ciclo.Inicio || dia > ciclo.Fim)
         {
             throw new RegraDeNegocioException(

@@ -5,6 +5,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,19 +16,25 @@ namespace AgendamentoAtendimento.Api.Controllers;
 public class DashboardController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
+    private readonly RelogioDoTenant _relogio;
 
-    public DashboardController(AppDbContext db) => _db = db;
+    public DashboardController(AppDbContext db, RelogioDoTenant relogio)
+    {
+        _db = db;
+        _relogio = relogio;
+    }
 
     [HttpGet("resumo")]
     [RequerPermissao("dashboard.ver")]
     public async Task<ActionResult<ResumoDashboardDto>> Resumo(
         [FromQuery] DateOnly? data, CancellationToken ct = default)
     {
-        var dia = data ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        var inicioDia = new DateTimeOffset(dia.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        var fimDia = inicioDia.AddDays(1);
-        var inicioMes = new DateTimeOffset(
-            new DateOnly(dia.Year, dia.Month, 1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        // "Hoje" e "este mês" são os do calendário da empresa, com as fronteiras na
+        // meia-noite de lá.
+        var dia = data ?? _relogio.Hoje();
+        var inicioDia = _relogio.InicioDoDia(dia);
+        var fimDia = _relogio.FimDoDia(dia);
+        var inicioMes = _relogio.InicioDoDia(new DateOnly(dia.Year, dia.Month, 1));
 
         // Os contadores seguem a mesma regra da agenda: quem só enxerga os próprios
         // atendimentos não pode ler pelo painel quantos a empresa tem hoje.

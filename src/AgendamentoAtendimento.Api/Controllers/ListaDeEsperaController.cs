@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Assinaturas;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,11 +21,14 @@ public class ListaDeEsperaController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
     private readonly ListaDeEsperaService _fila;
+    private readonly RelogioDoTenant _relogio;
 
-    public ListaDeEsperaController(AppDbContext db, ListaDeEsperaService fila)
+    public ListaDeEsperaController(
+        AppDbContext db, ListaDeEsperaService fila, RelogioDoTenant relogio)
     {
         _db = db;
         _fila = fila;
+        _relogio = relogio;
     }
 
     private static DateTimeOffset Agora => DateTimeOffset.UtcNow;
@@ -65,7 +69,7 @@ public class ListaDeEsperaController : ControllerBaseApi
             "Serviço não encontrado.");
 
         // Esperar por um dia que já passou é esperar por nada.
-        if (req.DataDesejada is { } data && data < DateOnly.FromDateTime(Agora.UtcDateTime))
+        if (req.DataDesejada is { } data && data < _relogio.Hoje())
         {
             throw new RegraDeNegocioException(
                 "A data desejada já passou.", "DATA_NO_PASSADO");
@@ -100,7 +104,7 @@ public class ListaDeEsperaController : ControllerBaseApi
         var esperando = await _fila.QuemEsperavaPorAsync(agendamento, ct);
 
         return Ok(new OportunidadeDto(
-            DateOnly.FromDateTime(agendamento.Inicio.UtcDateTime),
+            _relogio.DataLocal(agendamento.Inicio),
             agendamento.Id,
             esperando.Select(ParaDto).ToList()));
     }

@@ -31,7 +31,7 @@ public class CobrancaServiceTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _vendas = new VendaService(_db);
+        _vendas = new VendaService(_db, RelogioDeTeste.Utc);
         _cobrancas = new CobrancaService(_db, _vendas);
 
         _db.FormasPagamento.Add(new FormaPagamento

@@ -39,7 +39,7 @@ public class EscolhaPorServicoTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new DisponibilidadeService(_db, _contexto);
+        _servico = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
 
         // 09:00-12:00 em passos de uma hora: com dois serviços de 30 min, os encaixes
         // possíveis são 09:00, 10:00 e 11:00.

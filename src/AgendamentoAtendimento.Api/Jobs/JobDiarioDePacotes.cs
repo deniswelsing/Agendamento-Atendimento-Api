@@ -19,6 +19,9 @@ namespace AgendamentoAtendimento.Api.Jobs;
 /// abre, não no meio do expediente. Se o processo subir depois da hora, a varredura do
 /// dia acontece na subida — um dia sem aviso é pior que um aviso atrasado, e a operação
 /// é idempotente.
+///
+/// A HORA da varredura é um instante (03:00 UTC, meia-noite de Brasília), mas o "hoje"
+/// com que cada empresa é varrida é o do fuso dela — é ele que diz se o ciclo já venceu.
 /// </summary>
 public class JobDiarioDePacotes : BackgroundService
 {
@@ -75,20 +78,21 @@ public class JobDiarioDePacotes : BackgroundService
             var db = escopo.ServiceProvider.GetRequiredService<AppDbContext>();
             var servico = escopo.ServiceProvider
                 .GetRequiredService<RecorrenciaDePacotesService>();
+            var relogio = escopo.ServiceProvider.GetRequiredService<RelogioDoTenant>();
 
             contexto.IgnorarFiltroDeTenant = true;
             var tenants = await db.Tenants.AsNoTracking()
                 .Select(t => new { t.Id, t.Slug }).ToListAsync(ct);
             contexto.IgnorarFiltroDeTenant = false;
 
-            var hoje = DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
-
             foreach (var tenant in tenants)
             {
                 contexto.AssumirTenant(tenant.Id, tenant.Slug);
                 try
                 {
-                    var r = await servico.VarrerAsync(hoje, ct);
+                    // "Hoje" é o de cada empresa: o relógio segue o tenant que o contexto
+                    // acabou de assumir, e cada uma vira o ciclo no próprio calendário.
+                    var r = await servico.VarrerAsync(relogio.Hoje(), ct);
 
                     if (r.Avisos.Count > 0 || r.CiclosEncerrados > 0)
                     {

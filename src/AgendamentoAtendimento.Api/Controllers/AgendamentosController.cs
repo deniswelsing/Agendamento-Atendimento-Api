@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,17 +23,20 @@ public class AgendamentosController : ControllerBaseApi
     private readonly DisponibilidadeService _disponibilidade;
     private readonly LembreteService _lembretes;
     private readonly ListaDeEsperaService _fila;
+    private readonly RelogioDoTenant _relogio;
 
     public AgendamentosController(
         AppDbContext db,
         DisponibilidadeService disponibilidade,
         LembreteService lembretes,
-        ListaDeEsperaService fila)
+        ListaDeEsperaService fila,
+        RelogioDoTenant relogio)
     {
         _db = db;
         _disponibilidade = disponibilidade;
         _lembretes = lembretes;
         _fila = fila;
+        _relogio = relogio;
     }
 
     [HttpGet]
@@ -55,8 +59,10 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException("O período não pode passar de 92 dias.", "PERIODO");
         }
 
-        var inicio = new DateTimeOffset(de.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        var fim = new DateTimeOffset(ate.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        // Os dias pedidos são os da empresa: o atendimento das 22h de São Paulo é do dia
+        // em que acontece lá, e não do seguinte, como seria cortando em UTC.
+        var inicio = _relogio.InicioDoDia(de);
+        var fim = _relogio.FimDoDia(ate);
 
         var agendamentos = await SomenteVisiveis(_db.Agendamentos.AsNoTracking())
             .Include(a => a.Cliente)
@@ -526,7 +532,7 @@ public class AgendamentosController : ControllerBaseApi
         var esperando = await _fila.QuemEsperavaPorAsync(comItens, ct);
 
         return Ok(new OportunidadeDto(
-            DateOnly.FromDateTime(comItens.Inicio.UtcDateTime),
+            _relogio.DataLocal(comItens.Inicio),
             comItens.Id,
             esperando.Select(EsperaResumida).ToList()));
     }

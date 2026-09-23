@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,11 +21,13 @@ public class VendasController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
     private readonly VendaService _vendas;
+    private readonly RelogioDoTenant _relogio;
 
-    public VendasController(AppDbContext db, VendaService vendas)
+    public VendasController(AppDbContext db, VendaService vendas, RelogioDoTenant relogio)
     {
         _db = db;
         _vendas = vendas;
+        _relogio = relogio;
     }
 
     [HttpGet]
@@ -47,15 +50,16 @@ public class VendasController : ControllerBaseApi
             .Include(v => v.Pagamentos).ThenInclude(x => x.FormaPagamento)
             .AsQueryable();
 
+        // O período é de dias da empresa: a venda das 22h de São Paulo é daquele dia.
         if (de is { } inicio)
         {
-            var limite = new DateTimeOffset(inicio.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            var limite = _relogio.InicioDoDia(inicio);
             consulta = consulta.Where(v => v.CriadoEm >= limite);
         }
 
         if (ate is { } fim)
         {
-            var limite = new DateTimeOffset(fim.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            var limite = _relogio.FimDoDia(fim);
             consulta = consulta.Where(v => v.CriadoEm < limite);
         }
 

@@ -52,7 +52,8 @@ public class VendasControllerTests : IAsyncLifetime
         _produtoId = produto.Id;
         _formaId = forma.Id;
 
-        _controller = new VendasController(_db, new VendaService(_db))
+        _controller = new VendasController(
+            _db, new VendaService(_db, RelogioDeTeste.Utc), RelogioDeTeste.Utc)
         {
             ControllerContext = ContextoDoController.Com("*"),
         };

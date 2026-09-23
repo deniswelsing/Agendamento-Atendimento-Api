@@ -83,6 +83,11 @@ os índices únicos são parciais: sem isso, um e-mail removido bloquearia o rec
 uma linha em `audit_logs` com o que mudou, quem mudou e por qual produto. Campos com
 `senha` ou `token` no nome nunca entram na trilha.
 
+**Datas e fuso.** Todo `DateTimeOffset` que a Api grava e devolve é um instante real, em
+UTC. Horário de funcionamento, jornadas, "hoje" e os filtros por data (`data`, `de`, `ate`)
+são interpretados no fuso da empresa (`Tenant.FusoHorario`, padrão `America/Sao_Paulo`) pelo
+`RelogioDoTenant`: o encaixe das 08:00 de São Paulo sai como `11:00:00+00:00`.
+
 **Permissões como catálogo.** `GET /api/perfis/catalogo` devolve as telas e as ações de
 cada uma. O admin monta os perfis a partir dessa lista e o app renderiza a tela de
 permissões sem conhecer nenhuma chave por conta própria. Uma ação sempre implica a tela

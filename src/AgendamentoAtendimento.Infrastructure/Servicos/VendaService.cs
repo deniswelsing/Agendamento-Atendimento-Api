@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
+using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
@@ -12,8 +13,13 @@ namespace AgendamentoAtendimento.Infrastructure.Servicos;
 public class VendaService
 {
     private readonly AppDbContext _db;
+    private readonly RelogioDoTenant _relogio;
 
-    public VendaService(AppDbContext db) => _db = db;
+    public VendaService(AppDbContext db, RelogioDoTenant relogio)
+    {
+        _db = db;
+        _relogio = relogio;
+    }
 
     /// <summary>
     /// Quem prestou cada serviço do atendimento, unidade a unidade, na ordem em que foram
@@ -255,8 +261,9 @@ public class VendaService
             TotalParcelas = Math.Max(1, parcelas),
             Meio = meio,
             ConfirmadoEm = DateTimeOffset.UtcNow,
-            PrevisaoLiquidacao = DateOnly.FromDateTime(
-                DateTime.UtcNow.AddDays(forma.DiasParaLiquidacao)),
+            // Contada do dia da empresa: a venda das 22h de São Paulo é de hoje, e não de
+            // amanhã como seria em UTC.
+            PrevisaoLiquidacao = _relogio.Hoje().AddDays(forma.DiasParaLiquidacao),
         };
     }
 

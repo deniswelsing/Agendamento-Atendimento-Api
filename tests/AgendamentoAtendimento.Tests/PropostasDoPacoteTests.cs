@@ -37,7 +37,7 @@ public class PropostasDoPacoteTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new PacoteAgendaService(_db, new DisponibilidadeService(_db, _contexto));
+        _servico = new PacoteAgendaService(_db, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc), RelogioDeTeste.Utc);
 
         foreach (var dia in Enum.GetValues<DayOfWeek>())
         {
@@ -201,10 +201,11 @@ public class PropostasDoPacoteTests : IAsyncLifetime
 
     private PacotesController Controller()
     {
-        var disponibilidade = new DisponibilidadeService(_db, _contexto);
+        var disponibilidade = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
         return new PacotesController(
-            _db, new PacoteAgendaService(_db, disponibilidade),
-            new RecorrenciaDePacotesService(_db), disponibilidade)
+            _db, new PacoteAgendaService(_db, disponibilidade, RelogioDeTeste.Utc),
+            new RecorrenciaDePacotesService(_db, RelogioDeTeste.Utc), disponibilidade,
+            RelogioDeTeste.Utc)
         {
             ControllerContext = ContextoDoController.Com("*"),
         };

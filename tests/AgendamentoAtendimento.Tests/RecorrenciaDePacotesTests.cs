@@ -30,7 +30,7 @@ public class RecorrenciaDePacotesTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new RecorrenciaDePacotesService(_db);
+        _servico = new RecorrenciaDePacotesService(_db, RelogioDeTeste.Utc);
 
         _db.Clientes.AddRange(
             new Cliente { TenantId = 1, Tipo = TipoCliente.Pessoa, Nome = "Ana" },

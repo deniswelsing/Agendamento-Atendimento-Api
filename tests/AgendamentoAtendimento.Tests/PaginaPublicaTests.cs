@@ -118,7 +118,8 @@ public class PaginaPublicaTests : IAsyncLifetime
         _contexto.TenantId = null;
 
         _servico = new PaginaPublicaService(
-            _db, _contexto, new DisponibilidadeService(_db, _contexto), new AssinaturaService(_db));
+            _db, _contexto, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc),
+            new AssinaturaService(_db), RelogioDeTeste.Utc);
 
         Pagina = (await _servico.AssumirPorSlugAsync("empresa-um"))!;
     }
