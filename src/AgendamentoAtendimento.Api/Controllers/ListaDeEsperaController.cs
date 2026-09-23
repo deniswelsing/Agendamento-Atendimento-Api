@@ -68,6 +68,13 @@ public class ListaDeEsperaController : ControllerBaseApi
                 i => i.Id == req.ItemCatalogoId && i.Tipo == TipoItem.Servico && i.Ativo, ct),
             "Serviço não encontrado.");
 
+        // Quem vai atender é do time desta empresa: o id de outra ficava gravado na fila.
+        if (req.ResponsavelId is { } responsavelId
+            && !await _db.Usuarios.AsNoTracking().AnyAsync(u => u.Id == responsavelId, ct))
+        {
+            throw new NaoEncontradoException("Profissional não encontrado.");
+        }
+
         // Esperar por um dia que já passou é esperar por nada.
         if (req.DataDesejada is { } data && data < _relogio.Hoje())
         {

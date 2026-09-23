@@ -143,6 +143,12 @@ public class CobrancasController : ControllerBaseApi
     public async Task<ActionResult<IReadOnlyList<CobrancaDto>>> DaVenda(
         long vendaId, CancellationToken ct)
     {
+        // A venda de outra empresa não existe aqui: 404, e não uma lista vazia.
+        if (!await _db.Vendas.AsNoTracking().AnyAsync(v => v.Id == vendaId, ct))
+        {
+            throw new NaoEncontradoException("Venda não encontrada.");
+        }
+
         var cobrancas = await _db.Cobrancas.AsNoTracking()
             .Include(c => c.FormaPagamento)
             .Where(c => c.VendaId == vendaId)
