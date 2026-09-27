@@ -303,22 +303,36 @@ public class CobrancaService
     public async Task<int> ExpirarVencidasAsync(CancellationToken ct = default)
     {
         var agora = DateTimeOffset.UtcNow;
-        var vencidas = await _db.Cobrancas
+        var vencidas = await _db.Cobrancas.AsNoTracking()
             .Where(c => (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
                         && c.ExpiraEm <= agora)
+            .Select(c => new { c.Id, c.VendaId })
             .ToListAsync(ct);
 
-        foreach (var cobranca in vencidas)
+        // Uma de cada vez, sob a trava da venda — a mesma de concluir: uma conclusão que
+        // passou da conferência um instante antes do prazo gravava "Aprovada", e esta
+        // rotina, com a leitura de antes, escrevia "Expirada" por cima (o pagamento ficava
+        // lançado, e a cobrança dizia que venceu). Relida depois da trava, ela já não está
+        // aberta e fica como está.
+        var expiradas = 0;
+        foreach (var vencida in vencidas)
         {
+            await using var trava = await _db.TravarVendaAsync(vencida.VendaId, ct);
+            var cobranca = await _db.Cobrancas.FirstOrDefaultAsync(c => c.Id == vencida.Id, ct);
+            if (cobranca is null
+                || cobranca.Status is not (StatusCobranca.Criada or StatusCobranca.EmAndamento))
+            {
+                continue;
+            }
+
             cobranca.Status = StatusCobranca.Expirada;
             cobranca.RespondidaEm = agora;
+            await _db.SaveChangesAsync(ct);
+            await trava.ConfirmarAsync(ct);
+            expiradas++;
         }
 
-        if (vencidas.Count > 0)
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        return vencidas.Count;
+        return expiradas;
     }
 
     private static void ExigirAberta(Cobranca cobranca)

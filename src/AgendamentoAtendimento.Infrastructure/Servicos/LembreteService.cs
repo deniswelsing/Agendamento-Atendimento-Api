@@ -178,6 +178,10 @@ public class LembreteService
     public async Task<(int Enviados, int Falharam, int Expirados)> DespacharAsync(
         DateTimeOffset agora, CancellationToken ct)
     {
+        // Um despacho por empresa de cada vez: a rotina de minuto e o "Despachar a fila
+        // agora" liam os mesmos pendentes, e cada lembrete saía duas vezes.
+        await using var trava = await _db.TravarLembretesAsync(ct);
+
         var config = await ConfiguracaoAsync(ct);
 
         var vencidos = await _db.Lembretes
@@ -240,6 +244,7 @@ public class LembreteService
             await _db.SaveChangesAsync(ct);
         }
 
+        await trava.ConfirmarAsync(ct);
         return (enviados, falharam, expirados);
     }
 
@@ -269,9 +274,10 @@ public class LembreteService
             return null;
         }
 
-        var slug = await _db.PaginasPublicas.AsNoTracking().Select(p => p.Slug).FirstOrDefaultAsync(ct)
-            ?? await _db.Tenants.AsNoTracking()
-                .Where(t => t.Id == _db.Contexto.TenantId).Select(t => t.Slug).FirstOrDefaultAsync(ct);
+        // Só a página no ar confirma: com ela desligada (ou sem página), o link caía num
+        // "Página não encontrada" — melhor o aviso sair sem link.
+        var slug = await _db.PaginasPublicas.AsNoTracking()
+            .Where(p => p.Ativa).Select(p => p.Slug).FirstOrDefaultAsync(ct);
         return slug is null ? null : $"{baseUrl.TrimEnd('/')}/p/{Uri.EscapeDataString(slug)}";
     }
 

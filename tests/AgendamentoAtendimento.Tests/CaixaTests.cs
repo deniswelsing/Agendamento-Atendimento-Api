@@ -124,6 +124,41 @@ public class CaixaTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Quantidade_absurda_e_recusada_ao_vender_e_nao_estoura_ao_fechar()
+    {
+        // Três bilhões de unidades passavam na criação e estouravam (500) na conta do
+        // estoque ao fechar a venda.
+        var recusa = await Assert.ThrowsAsync<RegraDeNegocioException>(
+            () => VenderAsync(new VendaItemRequest(_produtoId, 3_000_000_000m, null)));
+        Assert.Equal("QUANTIDADE", recusa.Codigo);
+    }
+
+    [Fact]
+    public async Task Prender_pelo_put_um_atendimento_que_nao_aconteceu_e_recusado()
+    {
+        var agendamento = new AgendamentoAtendimento.Domain.Agenda.Agendamento
+        {
+            TenantId = 1, ClienteId = _clienteId, Inicio = DateTimeOffset.UtcNow.AddDays(3),
+            Fim = DateTimeOffset.UtcNow.AddDays(3).AddMinutes(30),
+            Status = AgendamentoAtendimento.Domain.Agenda.StatusAgendamento.Agendado,
+        };
+        agendamento.Itens.Add(new AgendamentoAtendimento.Domain.Agenda.AgendamentoItem
+        {
+            TenantId = 1, ItemCatalogoId = _servicoId, Nome = "Serviço", DuracaoMinutos = 30,
+        });
+        _db.Add(agendamento);
+        await _db.SaveChangesAsync();
+        var venda = await VenderAsync(new VendaItemRequest(_servicoId, 1m, null));
+
+        // O POST recusa faturar um atendimento que nem começou; o PUT prendia do mesmo jeito.
+        var recusa = await Assert.ThrowsAsync<RegraDeNegocioException>(() => _vendas.Atualizar(
+            venda.VendaId,
+            new VendaRequest(_clienteId, new[] { new VendaItemRequest(_servicoId, 1m, null) }, agendamento.Id),
+            default));
+        Assert.Equal("ATENDIMENTO_NAO_ENTREGUE", recusa.Codigo);
+    }
+
+    [Fact]
     public async Task Venda_fechada_nao_se_edita()
     {
         var venda = await VenderAsync(new VendaItemRequest(_produtoId, 1m, null));

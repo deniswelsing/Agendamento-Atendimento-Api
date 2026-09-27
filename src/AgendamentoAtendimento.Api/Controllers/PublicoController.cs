@@ -207,7 +207,9 @@ public class PublicoController : ControllerBase
         {
             await _lembretes.ReprogramarAsync(agendamento.Id, Agora, ct);
         }
-        if (_fila is not null)
+        // O pedido que ainda espera aprovação não é compromisso: a espera só vira
+        // "Convertido" quando a empresa aprovar — recusado, o cliente continua na fila.
+        if (_fila is not null && agendamento.Status != StatusAgendamento.PendenteAprovacao)
         {
             await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
         }

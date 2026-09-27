@@ -161,4 +161,46 @@ public class PaginaPublicaCorrecoesTests : IAsyncLifetime
         });
         Assert.Equal(0, dia.TotalAgendamentos);
     }
+
+    [Fact]
+    public async Task Pedido_pendente_nao_tira_da_fila_de_espera_e_aprovar_tira()
+    {
+        // A página pede aprovação, e a Marina espera pelo serviço X.
+        _contexto.TenantId = 1;
+        (await _db.PaginasPublicas.FirstAsync()).ExigeAprovacao = true;
+        await _db.SaveChangesAsync();
+        var marinaId = (await _db.Clientes.FirstAsync()).Id;
+        var fila = new ListaDeEsperaService(_db, RelogioDeTeste.Utc);
+        var (espera, _) = await fila.EntrarAsync(marinaId, _xId, null, null, null, default);
+        _contexto.TenantId = null;
+
+        var publico = new PublicoController(_db, Servico(), fila: fila)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+        // O controller usa o relógio de verdade: uma segunda à frente, dentro da janela.
+        var dia0 = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(3));
+        var segunda = dia0.AddDays(((int)DayOfWeek.Monday - (int)dia0.DayOfWeek + 7) % 7);
+        var pedido = await publico.Agendar("empresa-um", new NovoAgendamentoPublicoRequest(
+            "Marina", "marina@exemplo.com", "11911111111", new[] { _xId },
+            new DateTimeOffset(segunda.ToDateTime(new TimeOnly(9, 0)), TimeSpan.Zero), null, null), default);
+        Assert.True(pedido.Result is OkObjectResult, System.Text.Json.JsonSerializer.Serialize((pedido.Result as ObjectResult)?.Value));
+
+        // Pendente não é compromisso: a espera continua — recusado, ela seguiria valendo.
+        Assert.Equal(StatusNaEspera.Aguardando,
+            (await _db.ListaDeEspera.AsNoTracking().FirstAsync(e => e.Id == espera.Id)).Status);
+
+        _contexto.TenantId = 1;
+        var agendamentoId = (await _db.Agendamentos.AsNoTracking().SingleAsync()).Id;
+        var pagina = new PaginaOnlineController(
+            _db, Servico(), new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            fila: fila)
+        {
+            ControllerContext = ContextoDoController.Com("*"),
+        };
+        await pagina.Aprovar(agendamentoId, default);
+
+        Assert.Equal(StatusNaEspera.Convertido,
+            (await _db.ListaDeEspera.AsNoTracking().FirstAsync(e => e.Id == espera.Id)).Status);
+    }
 }

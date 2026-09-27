@@ -232,9 +232,14 @@ parcelas ficam entre 1 e o máximo dela — 1 quando ela não parcela (`PARCELAS
 com uma cobrança em andamento na venda, **400** `VENDA_COM_COBRANCA` — o cliente pagaria
 duas vezes quando a cobrança fosse aprovada.
 
-Itens: quantidade, preço e desconto são arredondados a centavos; o desconto de uma linha
-não passa do valor dela, nem o desconto geral do valor dos itens (`DESCONTO_INVALIDO`).
-Venda cancelada ou estornada tem `saldoAberto` zero.
+Itens: quantidade, preço e desconto são arredondados a centavos; a quantidade de uma linha
+vai de 0,01 a 100.000 (`QUANTIDADE`); o desconto de uma linha não passa do valor dela, nem
+o desconto geral do valor dos itens (`DESCONTO_INVALIDO`). Venda cancelada ou estornada tem
+`saldoAberto` zero.
+
+Prender um atendimento a uma venda já existente (`PUT` com outro `agendamentoId`) é faturá-lo:
+as mesmas regras e a mesma trava do `POST` — só atendimento em andamento ou concluído, com
+serviço (`ATENDIMENTO_NAO_ENTREGUE`), e nunca um que já tem venda.
 
 ### Comissão
 
@@ -468,7 +473,11 @@ horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora 
   (preço zero), com os serviços do pacote (`SESSAO_DE_PACOTE`) e dentro do ciclo dela
   (`FORA_DO_CICLO`).
 - Atendimento que já virou venda (não cancelada) não se remarca nem se cancela: **400**
-  `ATENDIMENTO_FATURADO` — cancele a venda antes.
+  `ATENDIMENTO_FATURADO` — cancele a venda antes. Vale para o `PUT`, o `DELETE` e o `PATCH`
+  de status para `Cancelado`, conferido sob a trava da agenda (a mesma do faturamento).
+- Aprovar um pedido da página pelo `PATCH` de status tem o efeito do "Aprovar" da página
+  online: programa os lembretes e tira o cliente da lista de espera. Enquanto o pedido está
+  pendente, a espera continua valendo — recusado, o cliente segue na fila.
 - `DELETE` segue as mesmas transições do `PATCH` de status: quem já faltou não é cancelado
   (`TRANSICAO_INVALIDA`).
 - Trocar quem presta um serviço (`PATCH .../itens/{itemId}/responsavel`) com `null` devolve
@@ -616,6 +625,8 @@ da lista, como sempre esteve.
   ciclo, mas a resposta traz também `jaAvisados` — os pacotes que vencem nos próximos dias
   e já foram avisados (pela rotina da madrugada, por exemplo). Antes a rotina consumia o
   aviso e a tela, rodando depois, dizia que nada vencia.
+- Serviço excluído do catálogo depois de entrar no pacote sai das sessões marcadas daí em
+  diante (antes, marcar dava 500); sem nenhum serviço restante, **400** `SERVICO_INVALIDO`.
 
 ## Lembretes e rotinas
 
@@ -625,10 +636,15 @@ venceu — antes só saía quem apertasse "Despachar a fila agora" (`POST
 /api/lembretes/despachar`, que continua existindo para testar) — e expira as cobranças que
 passaram do prazo. Com os lembretes desligados, a rotina não manda nada.
 
+O despacho é um por empresa de cada vez (uma trava por tenant): a rotina e o "Despachar a
+fila agora" ao mesmo tempo não mandam o mesmo lembrete duas vezes. A cobrança vencida é
+expirada sob a trava da venda — uma conclusão que chegou antes do prazo não é sobrescrita.
+
 O link de confirmação do aviso é absoluto e abre a página pública com o código:
 `{PaginaPublica:BaseUrl}/p/{slug}?codigo={CODIGO}&confirmar=1` (ou `Web:BaseUrl`). Sem
-nenhum dos dois configurado, o aviso sai sem link — um endereço relativo num e-mail não
-abre nada.
+nenhum dos dois configurado, ou com a página pública desligada, o aviso sai sem link — um
+endereço relativo num e-mail não abre nada, e a página desligada responderia "não
+encontrada".
 
 ## Assinatura
 

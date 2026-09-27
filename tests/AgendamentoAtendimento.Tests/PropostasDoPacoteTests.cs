@@ -246,6 +246,32 @@ public class PropostasDoPacoteTests : IAsyncLifetime
         Assert.Equal(inicio, marcado.Inicio);
     }
 
+    [Fact]
+    public async Task Servico_excluido_do_catalogo_sai_da_sessao_em_vez_de_dar_500()
+    {
+        var segundo = new ItemCatalogo
+        {
+            TenantId = 1, Nome = "Revisão", Tipo = TipoItem.Servico, Preco = 100m,
+            DuracaoMinutos = 30, Ativo = true,
+        };
+        _db.ItensCatalogo.Add(segundo);
+        await _db.SaveChangesAsync();
+        var pacoteId = (await _db.PacoteClientes.FirstAsync(v => v.Id == _vinculoId)).PacoteId;
+        _db.PacoteItens.Add(new PacoteItem { TenantId = 1, PacoteId = pacoteId, ItemCatalogoId = segundo.Id });
+        await _db.SaveChangesAsync();
+
+        // Excluído depois de entrar no pacote: a grade o pula, e marcar dava 500.
+        segundo.Excluido = true;
+        await _db.SaveChangesAsync();
+
+        var inicio = new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero);
+        await Controller().Marcar(_vinculoId, new MarcarDoPacoteRequest(inicio, null), default);
+
+        var marcado = await _db.Agendamentos.Include(a => a.Itens)
+            .SingleAsync(a => a.PacoteClienteId == _vinculoId);
+        Assert.Equal("Consultoria", Assert.Single(marcado.Itens).Nome);
+    }
+
     /// <summary>Fora do horário da empresa não se marca, nem pelo pacote.</summary>
     [Fact]
     public async Task Marcar_pelo_pacote_fora_do_funcionamento_e_recusado()

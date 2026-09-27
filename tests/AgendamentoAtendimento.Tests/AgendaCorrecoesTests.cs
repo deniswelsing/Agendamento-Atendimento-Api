@@ -352,4 +352,65 @@ public class AgendaCorrecoesTests : IAsyncLifetime
             Segunda, 0, null, default, new[] { _livreId }, clienteId: _outroClienteId);
         Assert.Contains(doOtavio.Livres, s => s.Inicio == As(10));
     }
+
+    [Fact]
+    public async Task Aprovar_o_pedido_devolve_quem_presta_cada_servico()
+    {
+        // Um pedido da página com dois serviços de duas pessoas.
+        var pedido = new Agendamento
+        {
+            TenantId = 1, ClienteId = _clienteId, Inicio = As(9), Fim = As(10),
+            Status = StatusAgendamento.PendenteAprovacao, ResponsavelId = _brunaId,
+        };
+        pedido.Itens.Add(new AgendamentoItem
+        {
+            TenantId = 1, ItemCatalogoId = _xId, Nome = "X", DuracaoMinutos = 30, Ordem = 0,
+            ResponsavelId = _brunaId,
+        });
+        pedido.Itens.Add(new AgendamentoItem
+        {
+            TenantId = 1, ItemCatalogoId = _yId, Nome = "Y", DuracaoMinutos = 30, Ordem = 1,
+            ResponsavelId = _caioId,
+        });
+        _db.Agendamentos.Add(pedido);
+        await _db.SaveChangesAsync();
+        // Sem nada carregado de antes: é o que a requisição de verdade encontra.
+        _db.ChangeTracker.Clear();
+
+        var disponibilidade = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
+        var pagina = new PaginaOnlineController(
+            _db,
+            new PaginaPublicaService(
+                _db, _contexto, disponibilidade, new AssinaturaService(_db), RelogioDeTeste.Utc),
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build())
+        {
+            ControllerContext = ContextoDoController.Com("*"),
+        };
+
+        var aprovado = Corpo(await pagina.Aprovar(pedido.Id, default));
+
+        Assert.Equal(StatusAgendamento.Confirmado, aprovado.Status);
+        Assert.Equal(new[] { "Bruna", "Caio" },
+            aprovado.Itens.OrderBy(i => i.Ordem).Select(i => i.ResponsavelNome).ToArray());
+    }
+
+    [Fact]
+    public async Task Cancelar_pelo_patch_o_atendimento_faturado_tambem_e_recusado()
+    {
+        var faturado = await MarcarAsync(_outroClienteId, 15, new[] { _livreId }, _anaId);
+        var venda = new Venda { TenantId = 1, ClienteId = _outroClienteId, AgendamentoId = faturado.AgendamentoId };
+        _db.Vendas.Add(venda);
+        await _db.SaveChangesAsync();
+        var agendamento = await _db.Agendamentos.FirstAsync(a => a.Id == faturado.AgendamentoId);
+        agendamento.VendaId = venda.Id;
+        await _db.SaveChangesAsync();
+
+        // O DELETE já recusava; o PATCH para Cancelado deixava a venda aberta cobrando o
+        // que não aconteceu.
+        var recusa = await Assert.ThrowsAsync<RegraDeNegocioException>(() => Agenda().AlterarStatus(
+            faturado.AgendamentoId, new AlterarStatusRequest(StatusAgendamento.Cancelado, "desistiu"), default));
+        Assert.Equal("ATENDIMENTO_FATURADO", recusa.Codigo);
+        Assert.NotEqual(StatusAgendamento.Cancelado,
+            (await _db.Agendamentos.AsNoTracking().FirstAsync(a => a.Id == faturado.AgendamentoId)).Status);
+    }
 }

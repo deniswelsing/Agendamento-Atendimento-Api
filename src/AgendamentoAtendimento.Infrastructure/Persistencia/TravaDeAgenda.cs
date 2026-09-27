@@ -38,6 +38,12 @@ public static class TravaDeAgenda
     /// </summary>
     public const int EspacoDaVenda = 0x56454E44;
 
+    /// <summary>
+    /// Espaço da trava do despacho de lembretes de uma empresa: "LEMB". A rotina de minuto,
+    /// o "Despachar a fila agora" e outra instância da Api despacham um de cada vez.
+    /// </summary>
+    public const int EspacoDosLembretes = 0x4C454D42;
+
     public static async Task<TransacaoDaAgenda> TravarAgendaAsync(
         this AppDbContext db, CancellationToken ct = default)
     {
@@ -72,6 +78,26 @@ public static class TravaDeAgenda
         ArgumentNullException.ThrowIfNull(db);
         // Duas vendas com os mesmos 32 bits de baixo só dividiriam a fila.
         return TravarAsync(db, EspacoDaVenda, unchecked((int)vendaId), ct);
+    }
+
+    /// <summary>
+    /// A trava do despacho de lembretes da empresa do contexto. Sem ela, dois despachos ao
+    /// mesmo tempo liam os mesmos pendentes e cada lembrete saía duas vezes; com ela, o
+    /// segundo espera o primeiro gravar e já não os encontra pendentes.
+    /// </summary>
+    public static Task<TransacaoDaAgenda> TravarLembretesAsync(
+        this AppDbContext db, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+
+        if (!db.Database.IsNpgsql())
+        {
+            return Task.FromResult(TransacaoDaAgenda.Nenhuma);
+        }
+
+        var tenantId = db.Contexto.TenantId
+            ?? throw new InvalidOperationException("Despachar lembretes exige um tenant no contexto.");
+        return TravarAsync(db, EspacoDosLembretes, unchecked((int)tenantId), ct);
     }
 
     private static async Task<TransacaoDaAgenda> TravarAsync(

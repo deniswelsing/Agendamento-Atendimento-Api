@@ -351,7 +351,7 @@ public class VendaService
             {
                 if (produto.Estoque is { } estoque)
                 {
-                    produto.Estoque = estoque + porProduto[produto.Id];
+                    produto.Estoque = (int)Math.Min(int.MaxValue, (long)estoque + porProduto[produto.Id]);
                 }
             }
         }
@@ -359,12 +359,17 @@ public class VendaService
         venda.EstoqueBaixado = false;
     }
 
-    /// <summary>Unidades inteiras por produto: meia unidade tira uma da prateleira.</summary>
+    /// <summary>
+    /// Unidades inteiras por produto: meia unidade tira uma da prateleira. A soma é em
+    /// `long` e para no teto de `int`: somar em `int` estourava (500) com quantidade absurda.
+    /// </summary>
     private static Dictionary<long, int> QuantidadesPorProduto(Venda venda) =>
         venda.Itens
             .Where(i => i.Tipo == TipoItem.Produto)
             .GroupBy(i => i.ItemCatalogoId)
-            .ToDictionary(g => g.Key, g => g.Sum(i => (int)Math.Ceiling(i.Quantidade)));
+            .ToDictionary(
+                g => g.Key,
+                g => (int)Math.Min(int.MaxValue, g.Sum(i => (long)Math.Ceiling(i.Quantidade))));
 
     /// <summary>
     /// Os produtos, com a linha travada até o fim da transação: duas vendas diferentes

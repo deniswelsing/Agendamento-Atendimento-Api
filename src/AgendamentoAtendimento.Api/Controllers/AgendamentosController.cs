@@ -442,6 +442,10 @@ public class AgendamentosController : ControllerBaseApi
         // Mover também é gravar na agenda: a mesma trava do criar.
         await using var trava = await _db.TravarAgendaAsync(ct);
 
+        // De novo, já com a trava: o faturamento pode ter gravado a venda entre a primeira
+        // conferência e aqui — e ele grava sob esta mesma trava.
+        await ExigirSemVendaAsync(agendamento, ct);
+
         // Ignora o próprio agendamento na conta: reagendar para o mesmo horário não pode
         // esbarrar no compromisso que está sendo movido.
         var escolhas = Escolhas(req.ItensIds, req.ResponsaveisPorItem);
@@ -543,6 +547,19 @@ public class AgendamentosController : ControllerBaseApi
 
         Validacoes.Cabe(req.Motivo, 500, "O motivo");
 
+        // Cancelar pelo PATCH tem a regra do DELETE: atendimento faturado não se cancela —
+        // a venda ficaria aberta cobrando o que não aconteceu. Sob a trava da agenda, a
+        // mesma do faturamento.
+        var cancelando = req.Status == StatusAgendamento.Cancelado;
+        await using var trava = cancelando
+            ? await _db.TravarAgendaAsync(ct)
+            : TransacaoDaAgenda.Nenhuma;
+        if (cancelando)
+        {
+            await ExigirSemVendaAsync(agendamento, ct);
+        }
+
+        var eraPedido = agendamento.Status == StatusAgendamento.PendenteAprovacao;
         agendamento.Status = req.Status;
         agendamento.IniciadoEm = req.Status == StatusAgendamento.EmAtendimento
             ? DateTimeOffset.UtcNow : agendamento.IniciadoEm;
@@ -552,12 +569,23 @@ public class AgendamentosController : ControllerBaseApi
             ? req.Motivo : agendamento.MotivoCancelamento;
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         // Atendimento que acabou — de qualquer jeito — não tem mais o que lembrar.
         if (req.Status is StatusAgendamento.Cancelado or StatusAgendamento.Concluido
             or StatusAgendamento.NaoCompareceu or StatusAgendamento.EmAtendimento)
         {
             await _lembretes.CancelarPendentesAsync(id, ct);
+        }
+        else if (eraPedido)
+        {
+            // Aprovar o pedido por aqui é o mesmo que pela página online: vira compromisso,
+            // com os lembretes dele, e tira o cliente da fila de espera daquele serviço.
+            await _lembretes.ReprogramarAsync(id, DateTimeOffset.UtcNow, ct);
+            var comItens = await _db.Agendamentos.AsNoTracking()
+                .Include(a => a.Itens)
+                .FirstAsync(a => a.Id == id, ct);
+            await _fila.ConverterPorAgendamentoAsync(comItens, ct);
         }
 
         var completo = await CarregarAsync(id, ct);
@@ -592,12 +620,15 @@ public class AgendamentosController : ControllerBaseApi
         Validacoes.Cabe(motivo, 500, "O motivo");
 
         // Cancelar o atendimento deixava a venda dele aberta, cobrando um serviço que não
-        // aconteceu.
+        // aconteceu. A conferência é sob a trava da agenda — a mesma do faturamento —, para
+        // que uma venda gravada ao mesmo tempo não passe despercebida.
+        await using var trava = await _db.TravarAgendaAsync(ct);
         await ExigirSemVendaAsync(agendamento, ct);
 
         agendamento.Status = StatusAgendamento.Cancelado;
         agendamento.MotivoCancelamento = motivo;
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         // Lembrar de um atendimento cancelado é pior que não lembrar de nada.
         await _lembretes.CancelarPendentesAsync(id, ct);
@@ -813,7 +844,13 @@ public class AgendamentosController : ControllerBaseApi
     /// <summary>O atendimento que já virou venda (não cancelada) não muda nem cancela.</summary>
     private async Task ExigirSemVendaAsync(Agendamento agendamento, CancellationToken ct)
     {
-        if (agendamento.VendaId is not { } vendaId)
+        // Relido do banco, e não do que foi carregado: o faturamento grava o VendaId sob a
+        // trava da agenda, e quem confere depois de pegá-la precisa ver o que ele gravou.
+        var atual = await _db.Agendamentos.AsNoTracking()
+            .Where(a => a.Id == agendamento.Id)
+            .Select(a => a.VendaId)
+            .FirstOrDefaultAsync(ct);
+        if ((atual ?? agendamento.VendaId) is not { } vendaId)
         {
             return;
         }

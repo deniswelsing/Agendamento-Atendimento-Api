@@ -370,6 +370,15 @@ public class PacotesController : ControllerBaseApi
         var servicos = await _db.ItensCatalogo.AsNoTracking()
             .Where(i => itens.Contains(i.Id)).ToListAsync(ct);
 
+        // Serviço excluído do catálogo depois de entrar no pacote sai da sessão: a grade já
+        // o pulava e achava encaixe para os outros, e montar a sessão com ele dava 500.
+        itens = itens.Where(id => servicos.Any(s => s.Id == id)).ToList();
+        if (itens.Count == 0)
+        {
+            throw new RegraDeNegocioException(
+                "Os serviços deste pacote não estão mais no catálogo.", "SERVICO_INVALIDO");
+        }
+
         // Serviço sem duração no catálogo não bloqueia o pacote: meia hora é o padrão
         // da grade, e é melhor marcar com ela do que não marcar.
         var duracao = servicos.Sum(s => s.DuracaoMinutos ?? 0);

@@ -19,6 +19,9 @@ namespace AgendamentoAtendimento.Api.Controllers;
 [Route("api/vendas")]
 public class VendasController : ControllerBaseApi
 {
+    /// <summary>O máximo de unidades numa linha da venda.</summary>
+    private const decimal MaximoPorLinha = 100_000m;
+
     private readonly AppDbContext _db;
     private readonly VendaService _vendas;
     private readonly RelogioDoTenant _relogio;
@@ -188,6 +191,14 @@ public class VendasController : ControllerBaseApi
         Agendamento? agendamento;
         if (venda.AgendamentoId != req.AgendamentoId)
         {
+            // Prender um atendimento novo a esta venda é faturá-lo: a mesma trava da agenda
+            // e a mesma regra do POST. Sem elas, um PUT e um POST ao mesmo tempo faturavam o
+            // mesmo atendimento duas vezes, e um atendimento que nem começou virava venda.
+            // (A trava entra na transação da trava da venda e solta junto com ela.)
+            await using var travaDaAgenda = req.AgendamentoId is null
+                ? TransacaoDaAgenda.Nenhuma
+                : await _db.TravarAgendaAsync(ct);
+
             var anterior = await BuscarAgendamentoAsync(venda.AgendamentoId, ct);
             if (anterior is not null && anterior.VendaId == venda.Id)
             {
@@ -197,6 +208,13 @@ public class VendasController : ControllerBaseApi
             agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
             if (agendamento is not null)
             {
+                if (agendamento.CobrancaDisponivel(null) != AcaoDeCobranca.GerarVenda)
+                {
+                    throw new RegraDeNegocioException(
+                        "Só um atendimento em andamento ou concluído, com serviço, vira venda.",
+                        "ATENDIMENTO_NAO_ENTREGUE");
+                }
+
                 agendamento.VendaId = venda.Id;
             }
         }
@@ -544,10 +562,13 @@ public class VendasController : ControllerBaseApi
             var preco = decimal.Round(pedido.PrecoUnitario ?? item.Preco, 2, MidpointRounding.AwayFromZero);
             var desconto = decimal.Round(pedido.DescontoValor, 2, MidpointRounding.AwayFromZero);
 
-            if (quantidade <= 0)
+            // O teto é de digitação: três bilhões de unidades eram aceitos aqui e só
+            // estouravam (500) ao fechar a venda, na conta do estoque.
+            if (quantidade <= 0 || quantidade > MaximoPorLinha)
             {
                 throw new RegraDeNegocioException(
-                    $"Quantidade inválida para {item.Nome}.", "QUANTIDADE");
+                    $"Quantidade inválida para {item.Nome}: de 0,01 a 100.000 por linha.",
+                    "QUANTIDADE");
             }
 
             // O desconto é da linha: maior que ela, o que sobrava comia as outras linhas —
