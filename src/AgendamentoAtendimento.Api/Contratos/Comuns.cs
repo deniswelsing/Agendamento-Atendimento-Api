@@ -176,7 +176,11 @@ public sealed record PessoaResumoDto(long UsuarioId, string Nome);
 
 public sealed record AtribuicaoDto(
     long ItemId, string Nome, DateTimeOffset Inicio, DateTimeOffset Fim,
-    long ResponsavelId, string ResponsavelNome,
+    /// <summary>
+    /// Quem presta. Não vem na página pública quando a empresa não deixa o cliente escolher
+    /// o profissional: ali o time é dado interno.
+    /// </summary>
+    long? ResponsavelId, string? ResponsavelNome,
     /// <summary>
     /// Quem mais poderia prestar este serviço neste horário. Um só quer dizer que não
     /// há escolha a fazer — a tela marca e segue.
@@ -189,7 +193,9 @@ public sealed record AtribuicaoDto(
     int VagasRestantes = 0);
 
 public sealed record SlotDto(
-    DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome,
+    DateTimeOffset Inicio, DateTimeOffset Fim,
+    /// <summary>Quem atende. Some na página pública sem escolha de profissional.</summary>
+    long? ResponsavelId, string? ResponsavelNome,
     /// <summary>Um por serviço, na ordem em que foram pedidos.</summary>
     IReadOnlyList<AtribuicaoDto> Atribuicoes);
 

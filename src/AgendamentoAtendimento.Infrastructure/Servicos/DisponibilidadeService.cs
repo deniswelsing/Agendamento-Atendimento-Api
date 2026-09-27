@@ -883,6 +883,11 @@ public class DisponibilidadeService
     /// <paramref name="ignorarAgendamentoId"/> tira um agendamento da conta: é o que faz
     /// reagendar ou trocar o responsável não esbarrar no próprio compromisso.
     /// </summary>
+    /// <param name="responsaveisPorItem">
+    /// Quem foi escolhido para cada serviço, como na grade. Sem isto a conta era refeita
+    /// sem as escolhas: um atendimento com um serviço da Bruna e outro do Caio só achava
+    /// encaixe se o <paramref name="responsavelId"/> viesse nulo.
+    /// </param>
     public async Task<IReadOnlyList<AtribuicaoDeServico>?> MontarAtribuicoesAsync(
         DateTimeOffset inicio,
         IReadOnlyCollection<long>? itensIds,
@@ -890,12 +895,13 @@ public class DisponibilidadeService
         long? ignorarAgendamentoId = null,
         int duracaoMinutos = 0,
         CancellationToken ct = default,
-        IReadOnlyList<int>? etapasPorItem = null)
+        IReadOnlyList<int>? etapasPorItem = null,
+        IReadOnlyList<long?>? responsaveisPorItem = null)
     {
         var data = _relogio.DataLocal(inicio);
         var dia = await ObterDiaAsync(
             data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId,
-            null, etapasPorItem);
+            responsaveisPorItem, etapasPorItem);
 
         if (!dia.Aberto)
         {

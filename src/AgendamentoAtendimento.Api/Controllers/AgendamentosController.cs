@@ -69,7 +69,11 @@ public class AgendamentosController : ControllerBaseApi
             .Include(a => a.Responsavel)
             .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
             .Where(a => a.Inicio < fim && a.Fim > inicio)
-            .Where(a => responsavelId == null || a.ResponsavelId == responsavelId)
+            // "De quem" é de quem presta QUALQUER serviço, como na visibilidade: filtrar só
+            // pelo dono escondia o Caio do atendimento em que ele faz o segundo serviço —
+            // e a grade dele já descontava aquele horário.
+            .Where(a => responsavelId == null || a.ResponsavelId == responsavelId
+                        || a.Itens.Any(i => i.ResponsavelId == responsavelId))
             .Where(a => clienteId == null || a.ClienteId == clienteId)
             .Where(a => status == null || a.Status == status)
             .OrderBy(a => a.Inicio)
@@ -307,8 +311,9 @@ public class AgendamentosController : ControllerBaseApi
 
         // Quem presta cada serviço: o que veio no pedido, e o resto o servidor resolve.
         // É a mesma conta que montou a grade, então o que a tela ofereceu é o que entra.
+        var escolhas = Escolhas(req.ItensIds, req.ResponsaveisPorItem);
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
-            inicio, req.ItensIds, req.ResponsavelId, null, 0, ct, etapas);
+            inicio, req.ItensIds, UmaPessoaSo(req, escolhas), null, 0, ct, etapas, escolhas);
 
         if (atribuicoes is null)
         {
@@ -322,6 +327,7 @@ public class AgendamentosController : ControllerBaseApi
         await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, null, ct);
 
         var fim = atribuicoes.Max(a => a.Fim);
+        await ValidarClienteLivreAsync(cliente, inicio, fim, null, ct);
 
         var agendamento = new Agendamento
         {
@@ -359,6 +365,8 @@ public class AgendamentosController : ControllerBaseApi
         // A fila de avisos nasce junto: um agendamento sem lembrete programado é um
         // cliente que ninguém vai avisar.
         await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+        // Quem esperava por este serviço e acabou marcado sai da fila de espera.
+        await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
 
         var completo = await CarregarAsync(agendamento.Id, ct);
         return CreatedAtAction(
@@ -381,6 +389,10 @@ public class AgendamentosController : ControllerBaseApi
                 "Agendamento concluído ou cancelado não pode ser alterado.", "STATUS_FINAL");
         }
 
+        // O que já virou venda não se remexe por aqui: trocar os serviços deixava o
+        // atendimento num valor e a venda em outro.
+        await ExigirSemVendaAsync(agendamento, ct);
+
         if (req.ItensIds is null || req.ItensIds.Count == 0)
         {
             throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
@@ -388,7 +400,7 @@ public class AgendamentosController : ControllerBaseApi
 
         // O cliente vem do pedido: sem conferir, um id qualquer (de outra empresa,
         // inclusive) ia para a chave estrangeira e o atendimento sumia da agenda.
-        NaoNulo(
+        var cliente = NaoNulo(
             await _db.Clientes.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
             "Cliente não encontrado.");
 
@@ -405,6 +417,15 @@ public class AgendamentosController : ControllerBaseApi
 
         var inicio = req.Inicio.ToUniversalTime();
 
+        // Sessão de pacote se move, mas continua sendo a mesma sessão: os serviços são os
+        // do pacote, o preço já foi pago (zero) e a data fica dentro do ciclo que a paga.
+        // Remarcar pela agenda recriava os itens com o preço do catálogo — a sessão
+        // pré-paga virava cobrança cheia — e aceitava datas fora do ciclo.
+        if (agendamento.PacoteClienteId is not null)
+        {
+            await ValidarRemarcacaoDoPacoteAsync(agendamento, req.ItensIds, inicio, ct);
+        }
+
         var etapas = Etapas(req.ItensIds, req.EtapasPorItem);
 
         // Mover também é gravar na agenda: a mesma trava do criar.
@@ -412,8 +433,9 @@ public class AgendamentosController : ControllerBaseApi
 
         // Ignora o próprio agendamento na conta: reagendar para o mesmo horário não pode
         // esbarrar no compromisso que está sendo movido.
+        var escolhas = Escolhas(req.ItensIds, req.ResponsaveisPorItem);
         var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
-            inicio, req.ItensIds, req.ResponsavelId, id, 0, ct, etapas);
+            inicio, req.ItensIds, UmaPessoaSo(req, escolhas), id, 0, ct, etapas, escolhas);
 
         if (atribuicoes is null)
         {
@@ -425,6 +447,17 @@ public class AgendamentosController : ControllerBaseApi
         atribuicoes = AplicarEscolhas(atribuicoes, req.ItensIds, req.ResponsaveisPorItem);
         ValidarSimultaneos(atribuicoes, etapas);
         await ValidarEscolhasAsync(atribuicoes, inicio, req.ItensIds, id, ct);
+        await ValidarClienteLivreAsync(cliente, inicio, atribuicoes.Max(a => a.Fim), id, ct);
+
+        // Outro horário é outro combinado: a confirmação que o cliente deu valia para o
+        // horário antigo, e quem faltou e foi remarcado volta a estar só agendado. O
+        // pedido da página continua pendente — mover não é aprovar.
+        if (agendamento.Inicio != inicio
+            && agendamento.Status is StatusAgendamento.Confirmado or StatusAgendamento.NaoCompareceu)
+        {
+            agendamento.Status = StatusAgendamento.Agendado;
+            agendamento.ConfirmadoEm = null;
+        }
 
         agendamento.ClienteId = req.ClienteId;
         agendamento.Inicio = inicio;
@@ -433,17 +466,27 @@ public class AgendamentosController : ControllerBaseApi
         agendamento.Observacoes = req.Observacoes;
         agendamento.LocalAtendimento = req.LocalAtendimento;
 
+        // O preço e o nome que já estavam no atendimento valem para o mesmo serviço:
+        // remarcar move, não reprecifica. Serviço novo entra pelo catálogo.
+        var anteriores = agendamento.Itens
+            .GroupBy(i => i.ItemCatalogoId)
+            .ToDictionary(g => g.Key, g => new Queue<AgendamentoItem>(g.OrderBy(i => i.Ordem)));
+        var dePacote = agendamento.PacoteClienteId is not null;
+
         agendamento.Itens.Clear();
         var ordem = 0;
         foreach (var itemId in req.ItensIds)
         {
             var servico = servicos.First(x => x.Id == itemId);
+            var anterior = anteriores.TryGetValue(itemId, out var fila) && fila.Count > 0
+                ? fila.Dequeue()
+                : null;
             agendamento.Itens.Add(new AgendamentoItem
             {
                 ItemCatalogoId = servico.Id,
-                Nome = servico.Nome,
+                Nome = anterior?.Nome ?? servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
-                PrecoUnitario = servico.Preco,
+                PrecoUnitario = dePacote ? 0m : anterior?.PrecoUnitario ?? servico.Preco,
                 // `Ordem` é a etapa: serviços com a mesma acontecem ao mesmo tempo.
                 Ordem = etapas is null ? ordem : etapas[ordem],
                 ResponsavelId = atribuicoes[ordem].ResponsavelId,
@@ -522,6 +565,20 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException(
                 "Atendimento concluído não pode ser cancelado.", "STATUS_FINAL");
         }
+
+        // As mesmas transições do PATCH: o DELETE cancelava até quem já tinha faltado,
+        // que pelo PATCH é recusado.
+        if (agendamento.Status != StatusAgendamento.Cancelado
+            && !TransicaoValida(agendamento.Status, StatusAgendamento.Cancelado))
+        {
+            throw new RegraDeNegocioException(
+                $"Não é possível ir de {agendamento.Status} para {StatusAgendamento.Cancelado}.",
+                "TRANSICAO_INVALIDA");
+        }
+
+        // Cancelar o atendimento deixava a venda dele aberta, cobrando um serviço que não
+        // aconteceu.
+        await ExigirSemVendaAsync(agendamento, ct);
 
         agendamento.Status = StatusAgendamento.Cancelado;
         agendamento.MotivoCancelamento = motivo;
@@ -612,7 +669,17 @@ public class AgendamentosController : ControllerBaseApi
             item.ItemCatalogoId, janela.Inicio, janela.Fim, id, ct,
             agendamento.Inicio, agendamento.Fim);
 
-        return Ok(livres.Select(p => new PessoaResumoDto(p.UsuarioId, p.Nome)).ToList());
+        // Quem já presta outro serviço da mesma etapa está ocupado com ele nessa hora —
+        // ignorar o próprio atendimento não pode esconder isso.
+        var naMesmaEtapa = agendamento.Itens
+            .Where(i => i.Id != item.Id && i.Ordem == item.Ordem)
+            .Select(i => i.ResponsavelId ?? agendamento.ResponsavelId)
+            .OfType<long>()
+            .ToHashSet();
+
+        return Ok(livres
+            .Where(p => !naMesmaEtapa.Contains(p.UsuarioId))
+            .Select(p => new PessoaResumoDto(p.UsuarioId, p.Nome)).ToList());
     }
 
     [HttpPatch("{id:long}/itens/{itemId:long}/responsavel")]
@@ -639,8 +706,24 @@ public class AgendamentosController : ControllerBaseApi
         // Trocar quem presta ocupa a agenda de outra pessoa: confere e grava sob a trava.
         await using var trava = await _db.TravarAgendaAsync(ct);
 
-        if (req.ResponsavelId is { } novo)
+        // Nulo não é "ninguém": o serviço passa para quem responde pelo atendimento, e essa
+        // pessoa também tem de poder pegá-lo. Sem conferir, "deixar sem responsável" punha
+        // a mesma pessoa em dois atendimentos no mesmo horário.
+        var quemAssume = req.ResponsavelId ?? agendamento.ResponsavelId;
+        if (quemAssume is { } novo && novo != (item.ResponsavelId ?? agendamento.ResponsavelId))
         {
+            // Serviços da mesma etapa acontecem juntos: a mesma pessoa não faz os dois.
+            var noMesmoMomento = agendamento.Itens.FirstOrDefault(i =>
+                i.Id != item.Id && i.Ordem == item.Ordem
+                && (i.ResponsavelId ?? agendamento.ResponsavelId) == novo);
+            if (noMesmoMomento is not null)
+            {
+                throw new RegraDeNegocioException(
+                    $"A mesma pessoa não pode prestar \"{item.Nome}\" e "
+                    + $"\"{noMesmoMomento.Nome}\" ao mesmo tempo.",
+                    "SIMULTANEOS_MESMA_PESSOA");
+            }
+
             await ValidarEscolhasAsync(
                 new[]
                 {
@@ -663,6 +746,86 @@ public class AgendamentosController : ControllerBaseApi
 
         var completo = await CarregarAsync(id, ct);
         return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
+    }
+
+    /// <summary>
+    /// O <c>responsavelId</c> do pedido pede UMA pessoa para tudo. Com escolha por serviço
+    /// ele não vale: o painel mandava a pessoa da primeira linha junto com as escolhas, e
+    /// um atendimento da Bruna com um serviço do Caio era sempre recusado — a grade tinha
+    /// oferecido o encaixe, e o gravar procurava a Bruna para os dois.
+    /// </summary>
+    private static long? UmaPessoaSo(NovoAgendamentoRequest req, IReadOnlyList<long?>? escolhas) =>
+        escolhas is null ? req.ResponsavelId : null;
+
+    /// <summary>
+    /// Uma pessoa não está em dois lugares ao mesmo tempo: o mesmo cliente não fica marcado
+    /// duas vezes no mesmo horário — nem com duas pessoas diferentes, nem ocupando duas
+    /// vagas da mesma turma. Empresa pode: ela manda gente diferente.
+    /// </summary>
+    private async Task ValidarClienteLivreAsync(
+        Domain.Clientes.Cliente cliente, DateTimeOffset inicio, DateTimeOffset fim,
+        long? ignorarAgendamentoId, CancellationToken ct)
+    {
+        if (cliente.Tipo != Domain.Clientes.TipoCliente.Pessoa)
+        {
+            return;
+        }
+
+        var jaMarcado = await _db.Agendamentos.AsNoTracking().AnyAsync(a =>
+            a.ClienteId == cliente.Id
+            && a.Id != (ignorarAgendamentoId ?? 0)
+            && a.Status != StatusAgendamento.Cancelado
+            && a.Status != StatusAgendamento.NaoCompareceu
+            && a.Inicio < fim && a.Fim > inicio, ct);
+
+        if (jaMarcado)
+        {
+            throw new RegraDeNegocioException(
+                $"{cliente.NomeExibicao} já tem um atendimento nesse horário.", "CLIENTE_JA_AGENDADO");
+        }
+    }
+
+    /// <summary>O atendimento que já virou venda (não cancelada) não muda nem cancela.</summary>
+    private async Task ExigirSemVendaAsync(Agendamento agendamento, CancellationToken ct)
+    {
+        if (agendamento.VendaId is not { } vendaId)
+        {
+            return;
+        }
+
+        var status = await _db.Vendas.AsNoTracking()
+            .Where(v => v.Id == vendaId).Select(v => (StatusVenda?)v.Status).FirstOrDefaultAsync(ct);
+        if (status is not null and not StatusVenda.Cancelada)
+        {
+            throw new RegraDeNegocioException(
+                $"Este atendimento já virou a venda {vendaId}. Cancele a venda antes de mexer nele.",
+                "ATENDIMENTO_FATURADO");
+        }
+    }
+
+    /// <summary>Remarcar uma sessão de pacote: mesmos serviços, dentro do ciclo dela.</summary>
+    private async Task ValidarRemarcacaoDoPacoteAsync(
+        Agendamento agendamento, IReadOnlyList<long> itensIds, DateTimeOffset inicio, CancellationToken ct)
+    {
+        var doPacote = agendamento.Itens.Select(i => i.ItemCatalogoId).OrderBy(i => i).ToList();
+        if (!itensIds.OrderBy(i => i).SequenceEqual(doPacote))
+        {
+            throw new RegraDeNegocioException(
+                "Os serviços de uma sessão de pacote são os do pacote: remarque só a data e a hora.",
+                "SESSAO_DE_PACOTE");
+        }
+
+        var ciclo = await _db.CiclosDePacote.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.PacoteClienteId == agendamento.PacoteClienteId
+                                      && c.Ciclo == agendamento.PacoteCiclo, ct);
+        var dia = _relogio.DataLocal(inicio);
+        if (ciclo is not null && (dia < ciclo.Inicio || dia > ciclo.Fim))
+        {
+            throw new RegraDeNegocioException(
+                $"Esta sessão é do ciclo de {ciclo.Inicio:dd/MM/yyyy} a {ciclo.Fim:dd/MM/yyyy}: "
+                + "remarque para uma data dentro dele.",
+                "FORA_DO_CICLO");
+        }
     }
 
     private static IReadOnlyList<AtribuicaoDeServico> AplicarEscolhas(

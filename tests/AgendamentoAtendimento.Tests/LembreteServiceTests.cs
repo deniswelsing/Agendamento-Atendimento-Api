@@ -6,6 +6,7 @@ using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace AgendamentoAtendimento.Tests;
@@ -55,7 +56,10 @@ public class LembreteServiceTests : IAsyncLifetime
             .Options;
 
         _db = new AppDbContext(opcoes, _contexto);
-        _servico = new LembreteService(_db, _enviador, RelogioDeTeste.Utc);
+        _servico = new LembreteService(_db, _enviador, RelogioDeTeste.Utc, new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["PaginaPublica:BaseUrl"] = "https://painel.exemplo.com/" })
+            .Build());
+        _db.PaginasPublicas.Add(new ConfiguracaoPaginaPublica { TenantId = 1, Slug = "estudio", Ativa = true });
 
         var cliente = new Cliente
         {
@@ -225,8 +229,35 @@ public class LembreteServiceTests : IAsyncLifetime
         var agendamento = await _db.Agendamentos.FirstAsync(a => a.Id == id);
         Assert.False(string.IsNullOrWhiteSpace(agendamento.CodigoPublico));
 
+        // O link é a página pública, absoluto: era "/agendamento/{codigo}/confirmar",
+        // relativo e para uma rota que o painel não tinha.
         var mensagem = Assert.Single(_enviador.Enviadas);
-        Assert.Contains(agendamento.CodigoPublico!, mensagem.LinkDeConfirmacao);
+        Assert.Equal(
+            $"https://painel.exemplo.com/p/estudio?codigo={agendamento.CodigoPublico}&confirmar=1",
+            mensagem.LinkDeConfirmacao);
+    }
+
+    [Fact]
+    public async Task Sem_o_endereco_do_painel_nao_vai_link_quebrado()
+    {
+        var semEndereco = new LembreteService(_db, _enviador, RelogioDeTeste.Utc);
+        await MarcarAsync(ClienteId, Agora.AddDays(3));
+        await semEndereco.DespacharAsync(Agora, default);
+
+        Assert.Null(Assert.Single(_enviador.Enviadas).LinkDeConfirmacao);
+    }
+
+    [Fact]
+    public async Task Pedido_esperando_aprovacao_nao_recebe_aviso_de_marcado()
+    {
+        var id = await MarcarAsync(ClienteId, Agora.AddDays(3));
+        var agendamento = await _db.Agendamentos.FirstAsync(a => a.Id == id);
+        agendamento.Status = StatusAgendamento.PendenteAprovacao;
+        await _db.SaveChangesAsync();
+
+        await _servico.ReprogramarAsync(id, Agora, default);
+
+        Assert.Empty(await _db.Lembretes.Where(l => l.AgendamentoId == id && l.Status == StatusDeLembrete.Pendente).ToListAsync());
     }
 
     [Fact]

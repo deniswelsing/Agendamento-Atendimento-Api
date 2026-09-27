@@ -21,10 +21,13 @@ public class PaginaOnlineController : ControllerBaseApi
     private readonly AppDbContext _db;
     private readonly PaginaPublicaService _paginas;
     private readonly IConfiguration _config;
+    private readonly LembreteService? _lembretes;
 
     public PaginaOnlineController(
-        AppDbContext db, PaginaPublicaService paginas, IConfiguration config)
+        AppDbContext db, PaginaPublicaService paginas, IConfiguration config,
+        LembreteService? lembretes = null)
     {
+        _lembretes = lembretes;
         _db = db;
         _paginas = paginas;
         _config = config;
@@ -191,6 +194,20 @@ public class PaginaOnlineController : ControllerBaseApi
         agendamento.MotivoCancelamento = destino == StatusAgendamento.Cancelado ? motivo : null;
         await _db.SaveChangesAsync(ct);
         await trava.ConfirmarAsync(ct);
+
+        // Aprovado vira compromisso, e compromisso tem aviso: os lembretes do pedido nascem
+        // agora (enquanto pendente, a fila fica vazia de propósito). Recusado, nada fica.
+        if (_lembretes is not null)
+        {
+            if (destino == StatusAgendamento.Cancelado)
+            {
+                await _lembretes.CancelarPendentesAsync(agendamento.Id, ct);
+            }
+            else
+            {
+                await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+            }
+        }
 
         return Ok(agendamento.ParaDto());
     }

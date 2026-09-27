@@ -26,19 +26,25 @@ public class PacotesController : ControllerBaseApi
     private readonly RecorrenciaDePacotesService _recorrencia;
     private readonly DisponibilidadeService _disponibilidade;
     private readonly RelogioDoTenant _relogio;
+    private readonly LembreteService? _lembretes;
+    private readonly ListaDeEsperaService? _fila;
 
     public PacotesController(
         AppDbContext db,
         PacoteAgendaService agenda,
         RecorrenciaDePacotesService recorrencia,
         DisponibilidadeService disponibilidade,
-        RelogioDoTenant relogio)
+        RelogioDoTenant relogio,
+        LembreteService? lembretes = null,
+        ListaDeEsperaService? fila = null)
     {
         _db = db;
         _agenda = agenda;
         _recorrencia = recorrencia;
         _disponibilidade = disponibilidade;
         _relogio = relogio;
+        _lembretes = lembretes;
+        _fila = fila;
     }
 
     /// <summary>Hoje no calendário da empresa — é nele que os ciclos começam e vencem.</summary>
@@ -359,7 +365,28 @@ public class PacotesController : ControllerBaseApi
         }
         var fim = inicio.AddMinutes(duracao);
 
-        var responsavel = req.ResponsavelId ?? vinculo.ResponsavelPreferidoId;
+        // Primeiro a mesma conta da grade que montou a proposta: cada serviço com quem o
+        // presta. Um pacote com um serviço da Bruna e outro do Caio era proposto (a grade
+        // divide) e sempre recusado aqui, que procurava uma pessoa só para tudo. A pessoa
+        // pedida (ou a preferida do cliente) fica com o primeiro serviço — é ela que a
+        // proposta mostra.
+        var preferido = req.ResponsavelId ?? vinculo.ResponsavelPreferidoId;
+        var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(inicio, itens, preferido, null, 0, ct);
+        if (atribuicoes is null && preferido is not null && itens.Count > 1)
+        {
+            var escolhas = itens.Select((_, i) => i == 0 ? preferido : null).ToList();
+            atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
+                inicio, itens, null, null, 0, ct, null, escolhas);
+        }
+
+        if (atribuicoes is { Count: > 0 })
+        {
+            return await GravarSessaoAsync(vinculo, pacote, ciclo, inicio, itens, servicos, atribuicoes, trava, ct);
+        }
+
+        // Fora da grade (um horário quebrado combinado com o cliente), vale a regra de
+        // sempre: uma pessoa que presta tudo e está livre em cada janela.
+        var responsavel = preferido;
         if (responsavel is null)
         {
             var livres = await _disponibilidade.QuemPodePrestarAsync(
@@ -420,9 +447,57 @@ public class PacotesController : ControllerBaseApi
             });
         }
 
+        return await ConcluirSessaoAsync(agendamento, trava, ct);
+    }
+
+    /// <summary>A sessão com cada serviço na pessoa que a grade atribuiu.</summary>
+    private async Task<ActionResult<AgendamentoDto>> GravarSessaoAsync(
+        PacoteCliente vinculo, Pacote pacote, CicloDoCliente ciclo, DateTimeOffset inicio,
+        IReadOnlyList<long> itens, IReadOnlyList<ItemCatalogo> servicos,
+        IReadOnlyList<AtribuicaoDeServico> atribuicoes, TransacaoDaAgenda trava, CancellationToken ct)
+    {
+        var agendamento = new Agendamento
+        {
+            ClienteId = vinculo.ClienteId, Inicio = inicio, Fim = atribuicoes.Max(a => a.Fim),
+            Status = StatusAgendamento.Agendado, ResponsavelId = atribuicoes[0].ResponsavelId,
+            PacoteClienteId = vinculo.Id, PacoteCiclo = ciclo.Ciclo,
+            Observacoes = $"Pacote: {pacote.Nome}",
+        };
+
+        for (var ordem = 0; ordem < itens.Count; ordem++)
+        {
+            var servico = servicos.First(s => s.Id == itens[ordem]);
+            agendamento.Itens.Add(new AgendamentoItem
+            {
+                ItemCatalogoId = servico.Id, Nome = servico.Nome,
+                DuracaoMinutos = servico.DuracaoMinutos ?? 30, Quantidade = 1,
+                // Pré-pago: o preço já foi cobrado no pacote. Repetir aqui somaria a
+                // mesma sessão duas vezes no faturamento.
+                PrecoUnitario = 0m,
+                Ordem = ordem, ResponsavelId = atribuicoes[ordem].ResponsavelId,
+            });
+        }
+
+        return await ConcluirSessaoAsync(agendamento, trava, ct);
+    }
+
+    private async Task<ActionResult<AgendamentoDto>> ConcluirSessaoAsync(
+        Agendamento agendamento, TransacaoDaAgenda trava, CancellationToken ct)
+    {
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
         await trava.ConfirmarAsync(ct);
+
+        // A sessão de pacote é um atendimento como qualquer outro: o cliente é avisado e,
+        // se esperava na fila por este serviço, sai dela. Só a agenda fazia isso.
+        if (_lembretes is not null)
+        {
+            await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+        }
+        if (_fila is not null)
+        {
+            await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
+        }
 
         var completo = await _db.Agendamentos.AsNoTracking()
             .Include(a => a.Cliente).Include(a => a.Responsavel)

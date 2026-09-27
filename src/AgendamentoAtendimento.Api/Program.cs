@@ -51,6 +51,8 @@ builder.Services.AddScoped<PacoteAgendaService>();
 builder.Services.AddScoped<RecorrenciaDePacotesService>();
 // A varredura diária dos pacotes: avisa o que vence e vira o ciclo do que venceu.
 builder.Services.AddHostedService<JobDiarioDePacotes>();
+// De minuto em minuto: os lembretes que venceram saem, e a cobrança largada no meio expira.
+builder.Services.AddHostedService<JobDeRotina>();
 // O canal real (SMTP, provedor) é escolha de quem hospeda. Sem um configurado, o aviso
 // vai para o log — e a fila diz isso, em vez de a tela garantir um e-mail que não saiu.
 builder.Services.AddScoped<IEnviadorDeLembrete, EnviadorDeLembreteEmLog>();

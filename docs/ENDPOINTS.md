@@ -423,6 +423,32 @@ para todo caminho que grava ou move um agendamento: `POST` e `PUT /api/agendamen
 pelo pacote e aprovar/recusar pedido da página. Medido com 10 `POST` paralelos no mesmo
 horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora entra 1.
 
+### Marcar, remarcar e cancelar
+
+- `responsavelId` pede **uma pessoa para tudo**. Com `responsaveisPorItem` preenchido ele é
+  ignorado e vale a escolha por serviço — o painel mandava a pessoa da primeira linha junto,
+  e um atendimento com um serviço da Bruna e outro do Caio era sempre recusado.
+- O mesmo cliente (pessoa) não fica em dois atendimentos no mesmo horário, nem em duas vagas
+  da mesma turma: **400** `CLIENTE_JA_AGENDADO`. Empresa pode — ela manda gente diferente.
+- Remarcar (`PUT`) move, não reprecifica: o mesmo serviço mantém o preço e o nome que já
+  tinha. Mudar o horário de um atendimento confirmado (ou de quem faltou) o devolve a
+  `Agendado` — a confirmação era do horário antigo. Sessão de pacote continua pré-paga
+  (preço zero), com os serviços do pacote (`SESSAO_DE_PACOTE`) e dentro do ciclo dela
+  (`FORA_DO_CICLO`).
+- Atendimento que já virou venda (não cancelada) não se remarca nem se cancela: **400**
+  `ATENDIMENTO_FATURADO` — cancele a venda antes.
+- `DELETE` segue as mesmas transições do `PATCH` de status: quem já faltou não é cancelado
+  (`TRANSICAO_INVALIDA`).
+- Trocar quem presta um serviço (`PATCH .../itens/{itemId}/responsavel`) com `null` devolve
+  o serviço para quem responde pelo atendimento — e essa pessoa também precisa estar livre
+  na janela dele. Serviços da mesma etapa não ficam com a mesma pessoa, nem na troca nem
+  na lista de candidatos.
+- `GET /api/agendamentos?responsavelId=` traz o atendimento em que a pessoa presta
+  **qualquer** serviço, como a visibilidade "só o seu".
+- Marcar (pela agenda, pelo pacote ou pela página) tira o cliente da lista de espera
+  daquele serviço — a entrada vira `Convertido`. A varredura diária expira as esperas cuja
+  data passou.
+
 ## Página de agendamento online
 
 O cliente marca sozinho, num endereço público, sem conta e sem token.
@@ -463,7 +489,23 @@ Com `exigeAprovacao`, o pedido nasce `PendenteAprovacao` e **já segura o horár
 deixaria dois clientes pedirem o mesmo encaixe. Recusar é o que devolve o horário.
 
 Recusas: `AntecedenciaInsuficiente`, `ForaDaJanela`, `ServicoIndisponivel`,
-`HorarioIndisponivel`, `DadosIncompletos` (400) e `LimiteDiario` (**429**).
+`HorarioIndisponivel`, `DadosIncompletos` (400) e `LimiteDiario` (**429**). E-mail e
+telefone com formato inválido são `EMAIL_INVALIDO` / `TELEFONE_INVALIDO`; nome acima de 150
+caracteres, observação acima de 1000 e motivo de desmarcar acima de 500, `CAMPO_LONGO`.
+
+O combo de serviços é marcado com **cada serviço na pessoa que o presta**, como na grade:
+uma pessoa só para tudo recusava o combo que a própria página oferecia. Sem "o cliente
+escolhe o profissional", os horários não levam quem atende (`responsavelId`,
+`responsavelNome` e os candidatos saem da resposta) e `totalAgendamentos` vai zerado — o
+time e o movimento da empresa são dado interno.
+
+O cadastro não muda pela porta aberta: o cliente é achado pelo e-mail (sem diferenciar
+maiúsculas) e só ganha o telefone se não tinha nenhum. Um telefone diferente fica anotado
+no agendamento — antes, qualquer um que soubesse o e-mail de um cliente trocava o celular
+dele.
+
+Marcar pela página programa os lembretes como marcar pela agenda — o pedido pendente só
+quando for aprovado — e desmarcar cancela os que estavam na fila.
 
 **Assinatura da empresa parada.** `GET /api/publico/{slug}`, `/disponibilidade` e
 `POST .../agendamentos` respondem **503** `PAGINA_INDISPONIVEL` ("a agenda online desta
@@ -519,6 +561,19 @@ mostraria menos do que a semana prometeu.
 
 Estar apto não basta: quem sabe fazer mas já tem compromisso naquele horário continua fora
 da lista, como sempre esteve.
+
+## Lembretes e rotinas
+
+Marcar, remarcar e aprovar programam os avisos do atendimento (o "está marcado" e o
+lembrete N horas antes). Uma rotina de minuto em minuto, por empresa, **despacha** o que
+venceu — antes só saía quem apertasse "Despachar a fila agora" (`POST
+/api/lembretes/despachar`, que continua existindo para testar) — e expira as cobranças que
+passaram do prazo. Com os lembretes desligados, a rotina não manda nada.
+
+O link de confirmação do aviso é absoluto e abre a página pública com o código:
+`{PaginaPublica:BaseUrl}/p/{slug}?codigo={CODIGO}&confirmar=1` (ou `Web:BaseUrl`). Sem
+nenhum dos dois configurado, o aviso sai sem link — um endereço relativo num e-mail não
+abre nada.
 
 ## Assinatura
 
