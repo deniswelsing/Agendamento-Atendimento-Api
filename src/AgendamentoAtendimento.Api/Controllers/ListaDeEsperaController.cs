@@ -69,11 +69,32 @@ public class ListaDeEsperaController : ControllerBaseApi
             "Serviço não encontrado.");
 
         // Quem vai atender é do time desta empresa: o id de outra ficava gravado na fila.
-        if (req.ResponsavelId is { } responsavelId
-            && !await _db.Usuarios.AsNoTracking().AnyAsync(u => u.Id == responsavelId, ct))
+        if (req.ResponsavelId is { } responsavelId)
         {
-            throw new NaoEncontradoException("Profissional não encontrado.");
+            var pessoa = NaoNulo(
+                await _db.Usuarios.AsNoTracking().FirstOrDefaultAsync(u => u.Id == responsavelId, ct),
+                "Profissional não encontrado.");
+
+            // E é alguém que atende e presta esse serviço: a fila aceitava o financeiro, ou
+            // quem não faz o serviço, e a espera nunca casava com vaga nenhuma.
+            if (!pessoa.Ativo || !pessoa.Atendente || pessoa.ConvitePendente)
+            {
+                throw new RegraDeNegocioException(
+                    $"{pessoa.Nome} não atende clientes.", "NAO_ATENDENTE");
+            }
+
+            var executores = await _db.ExecutoresDeServico.AsNoTracking()
+                .Where(e => e.ItemCatalogoId == servico.Id)
+                .Select(e => e.UsuarioId)
+                .ToListAsync(ct);
+            if (executores.Count > 0 && !executores.Contains(responsavelId))
+            {
+                throw new RegraDeNegocioException(
+                    $"{pessoa.Nome} não presta {servico.Nome}.", "NAO_PRESTA");
+            }
         }
+
+        Validacoes.Cabe(req.Observacao, 500, "A observação");
 
         // Esperar por um dia que já passou é esperar por nada.
         if (req.DataDesejada is { } data && data < _relogio.Hoje())

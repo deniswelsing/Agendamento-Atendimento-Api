@@ -287,6 +287,8 @@ public class AgendamentosController : ControllerBaseApi
             throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
         }
 
+        ValidarTextos(req.Observacoes, req.LocalAtendimento);
+
         var cliente = NaoNulo(
             await _db.Clientes.FirstOrDefaultAsync(c => c.Id == req.ClienteId, ct),
             "Cliente não encontrado.");
@@ -397,6 +399,8 @@ public class AgendamentosController : ControllerBaseApi
         {
             throw new RegraDeNegocioException("Escolha ao menos um serviço.", "SEM_SERVICO");
         }
+
+        ValidarTextos(req.Observacoes, req.LocalAtendimento);
 
         // O cliente vem do pedido: sem conferir, um id qualquer (de outra empresa,
         // inclusive) ia para a chave estrangeira e o atendimento sumia da agenda.
@@ -530,6 +534,8 @@ public class AgendamentosController : ControllerBaseApi
                 $"Não é possível ir de {agendamento.Status} para {req.Status}.", "TRANSICAO_INVALIDA");
         }
 
+        Validacoes.Cabe(req.Motivo, 500, "O motivo");
+
         agendamento.Status = req.Status;
         agendamento.IniciadoEm = req.Status == StatusAgendamento.EmAtendimento
             ? DateTimeOffset.UtcNow : agendamento.IniciadoEm;
@@ -575,6 +581,8 @@ public class AgendamentosController : ControllerBaseApi
                 $"Não é possível ir de {agendamento.Status} para {StatusAgendamento.Cancelado}.",
                 "TRANSICAO_INVALIDA");
         }
+
+        Validacoes.Cabe(motivo, 500, "O motivo");
 
         // Cancelar o atendimento deixava a venda dele aberta, cobrando um serviço que não
         // aconteceu.
@@ -746,6 +754,16 @@ public class AgendamentosController : ControllerBaseApi
 
         var completo = await CarregarAsync(id, ct);
         return Ok(completo!.ParaDto(await StatusDaVendaAsync(completo!, ct)));
+    }
+
+    /// <summary>
+    /// Os textos do atendimento cabem nas colunas deles. Maior que isso o banco recusava no
+    /// meio da gravação — depois de o horário já ter sido conferido — e a tela recebia 500.
+    /// </summary>
+    private static void ValidarTextos(string? observacoes, string? local)
+    {
+        Validacoes.Cabe(observacoes, 1000, "As observações");
+        Validacoes.Cabe(local, 250, "O local do atendimento");
     }
 
     /// <summary>

@@ -281,4 +281,51 @@ public class AgendaCorrecoesTests : IAsyncLifetime
             () => Agenda().Cancelar(faturado.AgendamentoId, null, default));
         Assert.Equal("ATENDIMENTO_FATURADO", comVenda.Codigo);
     }
+
+    [Fact]
+    public async Task Texto_maior_que_a_coluna_volta_como_400_e_nao_grava()
+    {
+        var longo = new string('a', 1001);
+        var recusa = await Assert.ThrowsAsync<RegraDeNegocioException>(() => Agenda().Criar(
+            new NovoAgendamentoRequest(_clienteId, As(9), new[] { _livreId }, _anaId, longo, null), default));
+        Assert.Equal("CAMPO_LONGO", recusa.Codigo);
+        Assert.Empty(await _db.Agendamentos.ToListAsync());
+
+        var marcado = await MarcarAsync(_clienteId, 10, new[] { _livreId }, _anaId);
+        var motivo = await Assert.ThrowsAsync<RegraDeNegocioException>(
+            () => Agenda().Cancelar(marcado.AgendamentoId, new string('m', 501), default));
+        Assert.Equal("CAMPO_LONGO", motivo.Codigo);
+        Assert.Equal(StatusAgendamento.Agendado,
+            (await _db.Agendamentos.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task Lista_de_espera_so_aceita_quem_atende_e_presta_o_servico()
+    {
+        var financeiro = new Usuario
+        {
+            TenantId = 1, Nome = "Fábio", Email = "fabio@x.com", Atendente = false,
+            PerfilId = (await _db.Perfis.FirstAsync()).Id,
+        };
+        _db.Usuarios.Add(financeiro);
+        await _db.SaveChangesAsync();
+
+        var fila = new ListaDeEsperaController(
+            _db, new ListaDeEsperaService(_db, RelogioDeTeste.Utc), RelogioDeTeste.Utc)
+        {
+            ControllerContext = ContextoDoController.Com("*"),
+        };
+
+        var naoAtende = await Assert.ThrowsAsync<RegraDeNegocioException>(() => fila.Entrar(
+            new NovaEsperaRequest(_clienteId, _livreId, null, financeiro.Id), default));
+        Assert.Equal("NAO_ATENDENTE", naoAtende.Codigo);
+
+        // X é só da Bruna: esperar pelo X com o Caio é esperar por uma vaga que não existe.
+        var naoPresta = await Assert.ThrowsAsync<RegraDeNegocioException>(() => fila.Entrar(
+            new NovaEsperaRequest(_clienteId, _xId, null, _caioId), default));
+        Assert.Equal("NAO_PRESTA", naoPresta.Codigo);
+
+        await fila.Entrar(new NovaEsperaRequest(_clienteId, _xId, null, _brunaId), default);
+        Assert.Single(await _db.ListaDeEspera.ToListAsync());
+    }
 }

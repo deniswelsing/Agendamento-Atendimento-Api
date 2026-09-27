@@ -476,6 +476,11 @@ horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora 
 - Marcar (pela agenda, pelo pacote ou pela página) tira o cliente da lista de espera
   daquele serviço — a entrada vira `Convertido`. A varredura diária expira as esperas cuja
   data passou.
+- Observações (1000), local (250) e motivo do cancelamento (500) maiores que a coluna
+  voltam **400** `CAMPO_LONGO` antes de gravar.
+- `POST /api/lista-de-espera` com "com quem" (`responsavelId`) exige alguém que atende
+  (`NAO_ATENDENTE`) e presta o serviço pedido (`NAO_PRESTA`) — a fila aceitava o
+  financeiro, e a espera nunca casava com vaga nenhuma.
 
 ## Página de agendamento online
 
