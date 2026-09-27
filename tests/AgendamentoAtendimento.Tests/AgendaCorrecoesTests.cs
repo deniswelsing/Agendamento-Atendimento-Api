@@ -328,4 +328,28 @@ public class AgendaCorrecoesTests : IAsyncLifetime
         await fila.Entrar(new NovaEsperaRequest(_clienteId, _xId, null, _brunaId), default);
         Assert.Single(await _db.ListaDeEspera.ToListAsync());
     }
+
+    [Fact]
+    public async Task A_grade_nao_oferece_o_horario_em_que_o_cliente_ja_esta()
+    {
+        await MarcarAsync(_clienteId, 10, new[] { _livreId }, _anaId);
+        DisponibilidadeService Grade() => new(_db, _contexto, RelogioDeTeste.Utc);
+
+        // Sem cliente, o horário das 10h continua oferecido: o Caio e a Bruna estão livres.
+        var semCliente = await Grade().ObterDiaAsync(Segunda, 0, null, default, new[] { _livreId });
+        Assert.Contains(semCliente.Livres, s => s.Inicio == As(10));
+
+        // Com a Marina escolhida, ele sai da grade — o gravar o recusaria com
+        // CLIENTE_JA_AGENDADO. Os vizinhos continuam.
+        var daMarina = await Grade().ObterDiaAsync(
+            Segunda, 0, null, default, new[] { _livreId }, clienteId: _clienteId);
+        Assert.DoesNotContain(daMarina.Livres, s => s.Inicio < As(10, 30) && s.Fim > As(10));
+        Assert.Contains(daMarina.Livres, s => s.Inicio == As(9, 30));
+        Assert.Contains(daMarina.Livres, s => s.Inicio == As(10, 30));
+
+        // Outro cliente vê o horário normalmente.
+        var doOtavio = await Grade().ObterDiaAsync(
+            Segunda, 0, null, default, new[] { _livreId }, clienteId: _outroClienteId);
+        Assert.Contains(doOtavio.Livres, s => s.Inicio == As(10));
+    }
 }

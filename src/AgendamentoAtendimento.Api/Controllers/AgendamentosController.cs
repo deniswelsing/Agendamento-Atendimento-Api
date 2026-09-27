@@ -211,6 +211,11 @@ public class AgendamentosController : ControllerBaseApi
         /// dias": o dia ter encaixe não quer dizer que o encaixe sirva ao cliente.
         /// </summary>
         [FromQuery] bool incluirSugestoes = false,
+        /// <summary>
+        /// O cliente do atendimento, quando a tela já o escolheu: o horário em que ele já
+        /// tem atendimento não é oferecido, porque o gravar o recusaria.
+        /// </summary>
+        [FromQuery] long? clienteId = null,
         CancellationToken ct = default)
     {
         var itens = itensIds ?? Array.Empty<long>();
@@ -219,7 +224,8 @@ public class AgendamentosController : ControllerBaseApi
         var duracao = await DuracaoDosItensAsync(itens, ct);
         // Os itens entram no cálculo: só quem presta todos eles aparece como encaixe.
         var dia = await _disponibilidade.ObterDiaAsync(
-            data, duracao, responsavelId, ct, itens, null, escolhas, etapas, horaDe, horaAte);
+            data, duracao, responsavelId, ct, itens, null, escolhas, etapas, horaDe, horaAte,
+            clienteId);
 
         // Dia sem encaixe não é beco sem saída: o servidor já manda os dias próximos que
         // têm. Deixar a tela procurar dia a dia seria uma requisição por dia, e ela nem
@@ -229,7 +235,7 @@ public class AgendamentosController : ControllerBaseApi
             var sugestoes = await _disponibilidade.SugestoesAsync(
                 data.AddDays(1), itens, responsavelId, ct: ct,
                 responsaveisPorItem: escolhas, etapasPorItem: etapas,
-                horaDe: horaDe, horaAte: horaAte);
+                horaDe: horaDe, horaAte: horaAte, clienteId: clienteId);
 
             if (sugestoes.Count > 0)
             {
@@ -260,6 +266,7 @@ public class AgendamentosController : ControllerBaseApi
         [FromQuery] int[]? etapasPorItem,
         [FromQuery] TimeOnly? horaDe,
         [FromQuery] TimeOnly? horaAte,
+        [FromQuery] long? clienteId = null,
         CancellationToken ct = default)
     {
         if (ate.DayNumber - de.DayNumber > 62)
@@ -274,7 +281,7 @@ public class AgendamentosController : ControllerBaseApi
         var dias = await _disponibilidade.ObterPeriodoAsync(
             de, ate, duracao, responsavelId, ct, itens,
             Escolhas(itens, responsaveisPorItem), Etapas(itens, etapasPorItem),
-            horaDe, horaAte);
+            horaDe, horaAte, clienteId);
         return Ok(dias.Select(d => d.ParaDto()).ToList());
     }
 

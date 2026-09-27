@@ -416,6 +416,10 @@ mandaria procurar outro dia quando bastava abrir a faixa.
 `incluirSugestoes=true` traz os dias próximos mesmo quando este dia tem horário: é o
 botão "ver outros dias". O dia ter encaixe não quer dizer que o encaixe sirva ao cliente.
 
+`clienteId` diz para quem é o atendimento: o horário em que esse cliente (pessoa) já tem
+atendimento sai da grade e das sugestões — o `POST` o recusaria com `CLIENTE_JA_AGENDADO`.
+Sem ele, a grade é a do time, como sempre.
+
 Dia sem encaixe devolve `sugestoes`: os próximos dias que têm, com os primeiros horários
 de cada um. É lista, e não um "próximo dia" solto, porque quem está com o cliente no
 telefone precisa de duas ou três opções na mesma resposta — e apontar um dia só obriga a

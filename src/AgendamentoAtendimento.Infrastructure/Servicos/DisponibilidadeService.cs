@@ -1,5 +1,6 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
+using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
@@ -205,7 +206,8 @@ public class DisponibilidadeService
         IReadOnlyList<long?>? responsaveisPorItem = null,
         IReadOnlyList<int>? etapasPorItem = null,
         TimeOnly? horaDe = null,
-        TimeOnly? horaAte = null)
+        TimeOnly? horaAte = null,
+        long? clienteId = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -434,6 +436,22 @@ public class DisponibilidadeService
 
         var todosDoDia = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
 
+        // O cliente também não fica em dois lugares: escolhido ele, o horário em que ele já
+        // tem atendimento sai da grade — ela o oferecia e o gravar recusava com
+        // CLIENTE_JA_AGENDADO. É a regra da gravação: só pessoa (empresa manda gente
+        // diferente), e o que foi cancelado ou em que ele faltou não ocupa.
+        var clienteOcupouTudo = false;
+        if (clienteId is { } cliente && todosDoDia.Count > 0 && await ClienteEPessoaAsync(cliente, ct))
+        {
+            var doCliente = agendamentosDoDia
+                .Where(a => a.ClienteId == cliente && a.Status != StatusAgendamento.NaoCompareceu)
+                .ToList();
+            todosDoDia = todosDoDia
+                .Where(s => !doCliente.Any(a => s.Inicio < a.Fim && s.Fim > a.Inicio))
+                .ToList();
+            clienteOcupouTudo = todosDoDia.Count == 0;
+        }
+
         // A faixa corta no fim, e não na montagem da cadeia: é o mesmo dia, visto por
         // uma janela menor — e é o que deixa dizer "havia horário, mas não nessa faixa".
         var ordenados = todosDoDia
@@ -453,6 +471,8 @@ public class DisponibilidadeService
             // procurar outro dia quando bastava abrir a faixa.
             : soAFaixaCortou
                 ? $"Há horário neste dia, mas não entre {Faixa(horaDe, horaAte)}."
+                : clienteOcupouTudo
+                ? "O cliente já tem atendimento em todos os horários livres deste dia."
                 : escolhaImpossivel is not null
                 ? escolhaImpossivel
                 : habilitados.Any(h => h.Count == 0)
@@ -811,7 +831,8 @@ public class DisponibilidadeService
             TimeOnly? horaDe = null,
             TimeOnly? horaAte = null,
             int diasSugeridos = 3,
-            int slotsPorDia = 3)
+            int slotsPorDia = 3,
+            long? clienteId = null)
     {
         var sugestoes = new List<(DateOnly, IReadOnlyList<SlotDisponivel>)>();
 
@@ -820,7 +841,7 @@ public class DisponibilidadeService
             var data = de.AddDays(i);
             var dia = await ObterDiaAsync(
                 data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem, etapasPorItem,
-                horaDe, horaAte);
+                horaDe, horaAte, clienteId);
 
             if (dia.Livres.Count > 0)
             {
@@ -842,7 +863,8 @@ public class DisponibilidadeService
         IReadOnlyList<long?>? responsaveisPorItem = null,
         IReadOnlyList<int>? etapasPorItem = null,
         TimeOnly? horaDe = null,
-        TimeOnly? horaAte = null)
+        TimeOnly? horaAte = null,
+        long? clienteId = null)
     {
         if (ate < de)
         {
@@ -856,7 +878,7 @@ public class DisponibilidadeService
             // prometeria encaixe em dias que a tela abriria vazios.
             dias.Add(await ObterDiaAsync(
                 data, duracaoMinutos, responsavelId, ct, itensIds, null,
-                responsaveisPorItem, etapasPorItem, horaDe, horaAte));
+                responsaveisPorItem, etapasPorItem, horaDe, horaAte, clienteId));
         }
         return dias;
     }
@@ -1119,6 +1141,24 @@ public class DisponibilidadeService
             Fim = fechamento,
             Trabalha = true,
         };
+    }
+
+    private (long Id, bool Pessoa)? _clienteDaGrade;
+
+    /// <summary>Se o cliente é pessoa — só ela não se divide. Lido uma vez por instância.</summary>
+    private async Task<bool> ClienteEPessoaAsync(long clienteId, CancellationToken ct)
+    {
+        if (_clienteDaGrade is { } lido && lido.Id == clienteId)
+        {
+            return lido.Pessoa;
+        }
+
+        var tipo = await _db.Clientes.AsNoTracking()
+            .Where(c => c.Id == clienteId)
+            .Select(c => (TipoCliente?)c.Tipo)
+            .FirstOrDefaultAsync(ct);
+        _clienteDaGrade = (clienteId, tipo == TipoCliente.Pessoa);
+        return tipo == TipoCliente.Pessoa;
     }
 
     private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct)
