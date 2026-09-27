@@ -225,8 +225,7 @@ public class DisponibilidadeService
         var fechado = excecaoEmpresa?.Fechado ?? !(horarioEmpresa?.Aberto ?? false);
         var abertura = excecaoEmpresa?.Abertura ?? horarioEmpresa?.Abertura;
         var fechamento = excecaoEmpresa?.Fechamento ?? horarioEmpresa?.Fechamento;
-        var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
-        var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
+        var (pausaInicio, pausaFim) = PausaDoDia(excecaoEmpresa, horarioEmpresa);
         var intervalo = horarioEmpresa?.IntervaloSlotMinutos ?? 30;
 
         if (fechado || abertura is null || fechamento is null)
@@ -350,7 +349,7 @@ public class DisponibilidadeService
 
         bool PodeAtender(Usuario quem, TimeOnly de, TimeOnly ate, long? itemId = null)
         {
-            var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == quem.Id);
+            var jornada = JornadaDoDia(jornadas, quem.Id, excecaoEmpresa, horarioEmpresa);
             if (jornada is null || !jornada.Trabalha)
             {
                 return false;
@@ -694,8 +693,8 @@ public class DisponibilidadeService
             return false;
         }
 
-        var jornada = (await JornadasAsync(diaDaSemana, ct))
-            .FirstOrDefault(j => j.UsuarioId == usuarioId);
+        var jornada = JornadaDoDia(
+            await JornadasAsync(diaDaSemana, ct), usuarioId, excecaoEmpresa, horarioEmpresa);
         if (jornada is null || !jornada.Trabalha)
         {
             return false;
@@ -709,8 +708,7 @@ public class DisponibilidadeService
             return false;
         }
 
-        var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
-        var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
+        var (pausaInicio, pausaFim) = PausaDoDia(excecaoEmpresa, horarioEmpresa);
         if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
             ColideComPausa(de, ate, jornada.PausaInicioEfetiva, jornada.PausaFimEfetiva))
         {
@@ -1082,6 +1080,45 @@ public class DisponibilidadeService
         }
 
         return contagem;
+    }
+
+    /// <summary>
+    /// A pausa da empresa no dia. A exceção que abre o dia com horário próprio traz a pausa
+    /// dela — nula é "sem pausa" —, em vez de herdar a do dia da semana: um "horário
+    /// especial das 12 às 16" herdava a pausa das 12 às 13 e só abria às 13.
+    /// </summary>
+    private static (TimeOnly? Inicio, TimeOnly? Fim) PausaDoDia(
+        ExcecaoHorarioFuncionamento? excecao, HorarioFuncionamento? padrao) =>
+        excecao is { Fechado: false, Abertura: not null, Fechamento: not null }
+            ? (excecao.PausaInicio, excecao.PausaFim)
+            : (excecao?.PausaInicio ?? padrao?.PausaInicio, excecao?.PausaFim ?? padrao?.PausaFim);
+
+    /// <summary>
+    /// A jornada de alguém neste dia. Num dia que a empresa só abre por exceção (um domingo
+    /// de mutirão), ninguém tem jornada naquele dia da semana — nem pode ter, a Api recusa
+    /// com EMPRESA_FECHADA —, e o dia aberto ficava sem horário nenhum. Nesse caso o
+    /// expediente da exceção vale para quem não tem jornada; a ausência continua sendo o
+    /// jeito de dizer quem não vem.
+    /// </summary>
+    private static HorarioStaff? JornadaDoDia(
+        IEnumerable<HorarioStaff> jornadas, long usuarioId,
+        ExcecaoHorarioFuncionamento? excecao, HorarioFuncionamento? padrao)
+    {
+        var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == usuarioId);
+        if (jornada is not null || padrao?.Aberto == true
+            || excecao is not { Fechado: false, Abertura: { } abertura, Fechamento: { } fechamento })
+        {
+            return jornada;
+        }
+
+        return new HorarioStaff
+        {
+            UsuarioId = usuarioId,
+            DiaDaSemana = excecao.Data.DayOfWeek,
+            Inicio = abertura,
+            Fim = fechamento,
+            Trabalha = true,
+        };
     }
 
     private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct)

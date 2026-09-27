@@ -10,6 +10,7 @@ using AgendamentoAtendimento.Infrastructure.Servicos;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -107,6 +108,25 @@ builder.Services
         opcoes.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
         // Hora com ou sem segundos: "09:00" é o que um campo de hora produz.
         opcoes.JsonSerializerOptions.Converters.Add(new HoraFlexivelConverter());
+    })
+    .ConfigureApiBehaviorOptions(opcoes =>
+    {
+        // Pedido que nem chega a virar objeto (um número vazio, "45.5" num campo inteiro)
+        // volta no formato de todo erro da Api, com os campos que falharam. O ProblemDetails
+        // padrão não tem `message`, e as telas mostravam só "Não foi possível concluir".
+        opcoes.InvalidModelStateResponseFactory = contexto =>
+        {
+            var campos = contexto.ModelState
+                .Where(e => e.Value?.Errors.Count > 0)
+                .Select(e => e.Key.TrimStart('$', '.'))
+                .Where(c => c.Length > 0)
+                .Distinct()
+                .ToList();
+            var mensagem = campos.Count == 0
+                ? "O pedido veio num formato que a Api não entende."
+                : $"Confira {(campos.Count == 1 ? "o campo" : "os campos")}: {string.Join(", ", campos)}.";
+            return new BadRequestObjectResult(new ErroApi(mensagem, "DADOS_INVALIDOS", campos));
+        };
     });
 
 builder.Services.AddEndpointsApiExplorer();

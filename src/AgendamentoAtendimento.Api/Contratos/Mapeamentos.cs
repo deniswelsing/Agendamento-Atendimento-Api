@@ -60,16 +60,18 @@ public static class Mapeamentos
         i.Nome = r.Nome;
         i.Descricao = r.Descricao;
         i.Categoria = r.Categoria;
-        i.Preco = r.Preco;
-        i.Custo = r.Custo;
+        // Em centavos, como a coluna: devolver 10,555 e gravar 10,56 deixava a resposta
+        // discordando do que foi salvo.
+        i.Preco = decimal.Round(r.Preco, 2, MidpointRounding.AwayFromZero);
+        i.Custo = decimal.Round(r.Custo, 2, MidpointRounding.AwayFromZero);
         // Duração só faz sentido em serviço; estoque só em produto.
         i.DuracaoMinutos = r.Tipo == TipoItem.Servico ? r.DuracaoMinutos : null;
         i.Estoque = r.Tipo == TipoItem.Produto ? r.Estoque : null;
         i.CodigoDeBarras = r.CodigoDeBarras;
         i.ImagemUrl = r.ImagemUrl;
         i.Ativo = r.IsAtivo;
-        i.ComissaoPercentual = r.ComissaoPercentual;
-        i.TaxaPercentual = r.TaxaPercentual;
+        i.ComissaoPercentual = decimal.Round(r.ComissaoPercentual, 2, MidpointRounding.AwayFromZero);
+        i.TaxaPercentual = decimal.Round(r.TaxaPercentual, 2, MidpointRounding.AwayFromZero);
         // Produto não vai para a página pública de jeito nenhum: ela só agenda serviço.
         i.VisivelOnline = r.Tipo == TipoItem.Servico && r.VisivelOnline;
         // Turma só existe em serviço, e nunca abaixo de 1: capacidade zero seria um

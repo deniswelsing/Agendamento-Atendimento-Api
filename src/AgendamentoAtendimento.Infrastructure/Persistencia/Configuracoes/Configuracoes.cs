@@ -550,6 +550,7 @@ public class PacoteConfig : IEntityTypeConfiguration<Pacote>
         b.Property(p => p.Status).HasConversion<int>().IsRequired();
         b.Ignore(p => p.EhRecorrente);
         b.Ignore(p => p.ValorPorAtendimento);
+        b.Ignore(p => p.ValorExatoPorAtendimento);
         b.Ignore(p => p.Itens);
         b.Ignore(p => p.Clientes);
         b.HasOne(p => p.PacoteModelo).WithMany().HasForeignKey(p => p.PacoteModeloId)

@@ -662,4 +662,6 @@ public sealed record AvisoDeRenovacaoDto(
 public sealed record VarreduraDePacotesDto(
     DateOnly Data, IReadOnlyList<AvisoDeRenovacaoDto> Avisos, int CiclosEncerrados,
     int CiclosAbertos, int PacotesEncerrados, int EstornosGerados, decimal ValorEstornado,
-    string Resumo);
+    string Resumo,
+    /// <summary>O que vence nos próximos dias e já foi avisado neste ciclo.</summary>
+    IReadOnlyList<AvisoDeRenovacaoDto>? JaAvisados = null);

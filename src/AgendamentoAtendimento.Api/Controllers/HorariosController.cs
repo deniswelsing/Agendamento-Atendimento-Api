@@ -572,7 +572,8 @@ public class HorariosController : ControllerBaseApi
         // janelas, então salvar jornada fora dela guardaria hora que nunca vira encaixe
         // — e a tela mostraria uma escala que a agenda não cumpre.
         var funcionamento = await _db.HorariosFuncionamento.AsNoTracking().ToListAsync(ct);
-        var turnos = await _db.Turnos.AsNoTracking().Where(t => t.Ativo).ToListAsync(ct);
+        var turnos = await _db.Turnos.AsNoTracking().ToListAsync(ct);
+        var atuais = await _db.HorariosStaff.Where(h => h.UsuarioId == usuario.Id).ToListAsync(ct);
 
         foreach (var dia in req)
         {
@@ -581,8 +582,12 @@ public class HorariosController : ControllerBaseApi
                 continue;
             }
 
+            // Turno desativado não entra em escala nova — mas quem JÁ estava nele continua:
+            // excluir um turno em uso só o desativa, e recusar aqui travava a semana inteira
+            // da pessoa por causa de um dia que ninguém mexeu.
+            var jaEstava = atuais.Any(h => h.DiaDaSemana == dia.DiaDaSemana && h.TurnoId == dia.TurnoId);
             var turno = dia.TurnoId is { } turnoId
-                ? turnos.FirstOrDefault(t => t.Id == turnoId)
+                ? turnos.FirstOrDefault(t => t.Id == turnoId && (t.Ativo || jaEstava))
                   ?? throw new RegraDeNegocioException(
                       "Turno não encontrado ou inativo.", "TURNO_INVALIDO")
                 : null;
@@ -591,9 +596,19 @@ public class HorariosController : ControllerBaseApi
             // pedido. É a mesma conta que a agenda faz depois.
             ValidarCabeNoFuncionamento(
                 dia.DiaDaSemana, turno?.Inicio ?? dia.Inicio, turno?.Fim ?? dia.Fim, funcionamento);
+
+            // A pausa da jornada livre tem as mesmas regras do horário próprio: invertida,
+            // pela metade ou fora da jornada, ela era salva e a agenda a lia do jeito que
+            // estava.
+            if (turno is null && (dia.PausaInicio is not null || dia.PausaFim is not null)
+                && (dia.PausaInicio is not { } pi || dia.PausaFim is not { } pf
+                    || pi >= pf || pi < dia.Inicio || pf > dia.Fim))
+            {
+                throw new RegraDeNegocioException(
+                    "A pausa precisa ter início e fim, e ficar dentro da jornada.", "PAUSA_INVALIDA");
+            }
         }
 
-        var atuais = await _db.HorariosStaff.Where(h => h.UsuarioId == usuario.Id).ToListAsync(ct);
         foreach (var pedido in req)
         {
             var horario = atuais.FirstOrDefault(h => h.DiaDaSemana == pedido.DiaDaSemana);

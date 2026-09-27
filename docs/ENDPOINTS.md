@@ -13,7 +13,10 @@ Horário de funcionamento, `horaDe`/`horaAte` e parâmetros `DateOnly` (`data`, 
 `ate`) são interpretados no fuso da empresa (`Tenant.FusoHorario`).
 
 Erros voltam como `{ "message": "...", "code": "..." }`. Texto maior que a coluna ou número
-fora da faixa do banco é **400** (`CAMPO_LONGO`, `VALOR_FORA_DA_FAIXA`), e não 500.
+fora da faixa do banco é **400** (`CAMPO_LONGO`, `VALOR_FORA_DA_FAIXA`), e não 500. Corpo
+que nem vira objeto (número vazio, `"45.5"` num campo inteiro, data inválida) também volta
+nesse formato — **400** `DADOS_INVALIDOS`, com `campos` dizendo quais falharam — e não no
+`ProblemDetails` padrão, que não tem `message`.
 
 | Status | Significado |
 |---|---|
@@ -299,6 +302,16 @@ aberta, com saldo a receber) e continuavam contando no painel.
 `DELETE /api/formas-pagamento/{id}` responde **204** quando excluiu e **200** com a forma
 (`ativa: false`) quando ela já tinha recebimentos e por isso só foi desativada.
 
+### Catálogo
+
+`POST`/`PUT /api/catalogo/itens` recusam o que antes era gravado sem pergunta: comissão
+fora de 0–100% (`COMISSAO`), taxa fora de 0–100% (`TAXA`), custo negativo (`CUSTO`),
+estoque negativo (`ESTOQUE`) e texto maior que o campo (`CAMPO_LONGO`: nome 200, descrição
+1000, categoria 120, código de barras 60, endereço da imagem 500). Preço, custo, comissão e
+taxa são guardados com duas casas — `10.555` vira `10.56`, e não um valor que a tela mostra
+de um jeito e a venda cobra de outro. A listagem desempata pelo id: com nomes iguais, cada
+página ordenava do seu jeito e um item podia aparecer em duas páginas (e sumir de outra).
+
 ## Cobrança: maquininha, Pix e gateway
 
 ```
@@ -422,6 +435,21 @@ para todo caminho que grava ou move um agendamento: `POST` e `PUT /api/agendamen
 `PATCH .../itens/{itemId}/responsavel`, `POST /api/publico/{slug}/agendamentos`, marcar
 pelo pacote e aprovar/recusar pedido da página. Medido com 10 `POST` paralelos no mesmo
 horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora entra 1.
+
+### Horários, exceções e escala
+
+- Exceção que **abre** o dia com horário próprio traz a pausa dela; sem pausa na exceção, o
+  dia não tem pausa. Antes o "horário especial das 12 às 16" herdava a pausa das 12 às 13
+  do dia da semana e só abria às 13.
+- Dia que a empresa só abre por exceção (um domingo de mutirão): ninguém tem jornada nesse
+  dia da semana — nem pode ter, a Api recusa com `EMPRESA_FECHADA` —, então o expediente da
+  exceção vale para quem não tem jornada. Quem não vem é marcado como ausência. Antes o dia
+  aberto não tinha horário nenhum.
+- `PUT /api/horarios/staff/{usuarioId}`: turno desativado não entra em escala nova
+  (`TURNO_INVALIDO`), mas o dia que **já** estava nele continua salvando — excluir um turno
+  em uso só o desativa, e a semana inteira da pessoa ficava travada por causa de um dia que
+  ninguém mexeu. A pausa da jornada livre precisa ter início e fim, nessa ordem, dentro da
+  jornada (`PAUSA_INVALIDA`).
 
 ### Marcar, remarcar e cancelar
 
@@ -562,6 +590,24 @@ mostraria menos do que a semana prometeu.
 Estar apto não basta: quem sabe fazer mas já tem compromisso naquele horário continua fora
 da lista, como sempre esteve.
 
+## Pacotes
+
+- Preço negativo é recusado também no pacote montado na hora (`PRECO_INVALIDO`) — ele virava
+  estorno negativo. Um ciclo vende no máximo 1000 atendimentos (`PACOTE_GRANDE_DEMAIS`).
+- O estorno de quem sai do pacote é calculado sobre o valor exato da sessão e arredondado só
+  no total: R$ 100 em 3 sessões devolve R$ 100,00 das três e R$ 66,67 de duas (antes, R$ 99,99
+  e R$ 66,66 — o centavo sempre contra o cliente). `valorPorAtendimento` continua o número
+  com duas casas que a tela mostra.
+- Na lista de clientes do pacote, o ciclo aberto mostra em `quantidadeUsada` o que já foi
+  **atendido** (concluído) e em `disponivel` o que falta — o campo gravado só é preenchido
+  no fechamento, e a tela passava o ciclo inteiro em "0/4". Quem saiu do pacote aparece com
+  o último ciclo, que é onde está o estorno dele.
+- `POST /api/pacotes/varredura?data=` não roda para uma data futura (`DATA_FUTURA`): varrer
+  encerra ciclos e gera estorno de verdade. O aviso de renovação continua saindo uma vez por
+  ciclo, mas a resposta traz também `jaAvisados` — os pacotes que vencem nos próximos dias
+  e já foram avisados (pela rotina da madrugada, por exemplo). Antes a rotina consumia o
+  aviso e a tela, rodando depois, dizia que nada vencia.
+
 ## Lembretes e rotinas
 
 Marcar, remarcar e aprovar programam os avisos do atendimento (o "está marcado" e o
@@ -611,7 +657,9 @@ Assento só aumenta pelos caminhos de pagamento:
 - **Google Play**: `POST /api/assinatura/google-play/confirmar` com `tipoCompra: "ASSENTO"`
   contrata os inclusos do plano mais a `quantidade` comprada.
 
-Nos dois, passar do limite do plano é recusado sem gravar nada. A criação da transação no
+Nos dois, passar do limite do plano é recusado sem gravar nada — e a cotação
+(`POST /api/assinatura/cotacao`) recusa do mesmo jeito (`ACIMA_DO_LIMITE`), em vez de mostrar
+um preço que o checkout depois não aceita. A criação da transação no
 Paddle e a validação no Google Play continuam por implementar nesta instalação
 (`PADDLE_NAO_IMPLEMENTADO`, `PLAY_NAO_IMPLEMENTADO`).
 

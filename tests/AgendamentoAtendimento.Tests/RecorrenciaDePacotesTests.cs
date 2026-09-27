@@ -131,6 +131,24 @@ public class RecorrenciaDePacotesTests : IAsyncLifetime
         Assert.Empty((await _servico.VarrerAsync(Hoje.AddDays(1))).Avisos);
     }
 
+    /// <summary>
+    /// Mas quem roda a varredura depois da rotina da madrugada precisa ver o que vence: o
+    /// aviso já consumido volta em JaAvisados, e não some da resposta.
+    /// </summary>
+    [Fact]
+    public async Task O_que_ja_foi_avisado_continua_na_resposta()
+    {
+        await MontarAsync(RecorrenciaDePacote.Mensal, Hoje.AddDays(5));
+
+        var primeira = await _servico.VarrerAsync(Hoje);
+        Assert.Single(primeira.Avisos);
+        Assert.Empty(primeira.JaAvisados);
+
+        var segunda = await _servico.VarrerAsync(Hoje.AddDays(1));
+        Assert.Empty(segunda.Avisos);
+        Assert.Equal(primeira.Avisos[0].PacoteId, Assert.Single(segunda.JaAvisados).PacoteId);
+    }
+
     /// <summary>Pacote sem recorrência também avisa — mas que ACABA, não que renova.</summary>
     [Fact]
     public async Task Pacote_avulso_avisa_que_termina()
