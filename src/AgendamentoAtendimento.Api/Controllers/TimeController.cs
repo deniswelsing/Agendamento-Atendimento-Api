@@ -24,12 +24,16 @@ public class TimeController : ControllerBaseApi
     private readonly AppDbContext _db;
     private readonly AssinaturaService _assinaturas;
     private readonly IConfiguration? _config;
+    private readonly CacheDeAcesso? _acessos;
 
-    public TimeController(AppDbContext db, AssinaturaService assinaturas, IConfiguration? config = null)
+    public TimeController(
+        AppDbContext db, AssinaturaService assinaturas, IConfiguration? config = null,
+        CacheDeAcesso? acessos = null)
     {
         _db = db;
         _assinaturas = assinaturas;
         _config = config;
+        _acessos = acessos;
     }
 
     [HttpGet("membros")]
@@ -225,11 +229,20 @@ public class TimeController : ControllerBaseApi
                 throw new RegraDeNegocioException(
                     "Você não pode desativar o próprio acesso.", "AUTO_DESATIVACAO");
             }
+            else
+            {
+                // Desativar tira o acesso tanto quanto remover: o último administrador
+                // ativo não sai por aqui também.
+                await GarantirQueSobraAdminAsync(usuario, null, ct);
+            }
 
             usuario.Ativo = ativo;
         }
 
         await _db.SaveChangesAsync(ct);
+        // Perfil e situação valem já na próxima requisição da pessoa, e não quando o token
+        // dela vencer.
+        _acessos?.Invalidar(TenantId, usuario.Id);
         return Ok(usuario.ParaDto());
     }
 
@@ -254,6 +267,7 @@ public class TimeController : ControllerBaseApi
         // Exclusão lógica: a trilha de auditoria e os agendamentos antigos continuam válidos.
         _db.Usuarios.Remove(usuario);
         await _db.SaveChangesAsync(ct);
+        _acessos?.Invalidar(TenantId, usuario.Id);
         return NoContent();
     }
 

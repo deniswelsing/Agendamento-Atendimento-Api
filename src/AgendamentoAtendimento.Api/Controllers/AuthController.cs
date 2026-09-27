@@ -58,8 +58,9 @@ public class AuthController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(req.TenantSlug))
         {
-            var slug = req.TenantSlug.Trim();
-            var tenantDoSlug = await _db.Tenants.FirstOrDefaultAsync(t => t.Slug == slug, ct);
+            // O slug é gravado em minúsculas; "Clinica-B" digitado no celular é a mesma empresa.
+            var slug = req.TenantSlug.Trim().ToLowerInvariant();
+            var tenantDoSlug = await _db.Tenants.FirstOrDefaultAsync(t => t.Slug.ToLower() == slug, ct);
             if (tenantDoSlug is null)
             {
                 return Unauthorized(new ErroApi("Credenciais inválidas.", "CREDENCIAIS"));
@@ -123,9 +124,19 @@ public class AuthController : ControllerBase
         _contexto.UsuarioId = token.UsuarioId;
         _contexto.IgnorarFiltroDeTenant = false;
 
-        // Rotação: o token usado é revogado e um novo é emitido.
+        // Rotação: o token usado é revogado e um novo é emitido — os dois no mesmo
+        // SaveChanges. `RevogadoEm` é token de concorrência: se outro pedido já girou este
+        // token, o UPDATE não acha a linha e nada é gravado, nem o par novo.
         token.RevogadoEm = DateTimeOffset.UtcNow;
-        var novo = await EmitirRefreshAsync(token.Usuario, produto, ct);
+        string novo;
+        try
+        {
+            novo = await EmitirRefreshAsync(token.Usuario, produto, ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Unauthorized(new ErroApi("Sessão expirada. Entre novamente.", "REFRESH_INVALIDO"));
+        }
 
         return Ok(MontarResposta(token.Usuario, tenant, produto, novo));
     }

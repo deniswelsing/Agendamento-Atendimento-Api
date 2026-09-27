@@ -40,6 +40,8 @@ builder.Services.AddScoped<DisponibilidadeService>();
 builder.Services.AddScoped<AssinaturaService>();
 // O retrato da assinatura por tenant, para a checagem que roda em toda requisição.
 builder.Services.AddSingleton<CacheDeAssinatura>();
+// O retrato do acesso de cada usuário (ativo e permissões), para a conferência por requisição.
+builder.Services.AddSingleton<CacheDeAcesso>();
 builder.Services.AddScoped<VendaService>();
 builder.Services.AddScoped<CobrancaService>();
 builder.Services.AddScoped<PaginaPublicaService>();
@@ -166,6 +168,9 @@ if (app.Environment.IsDevelopment())
 app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<ContextoMiddleware>();
+// Antes da autorização: as permissões que decidem são as de agora, não as do token — e
+// quem foi desativado ou removido para aqui, mesmo com um token ainda na validade.
+app.UseMiddleware<AcessoAtualMiddleware>();
 app.UseAuthorization();
 // Depois da autorização: sem token o 401 vem antes; com token, a assinatura precisa
 // estar em dia em toda rota que não é de entrar, pagar ou da página pública.

@@ -2552,6 +2552,7 @@ namespace AgendamentoAtendimento.Infrastructure.Persistencia.Migrations
                         .HasColumnName("produto_origem");
 
                     b.Property<DateTimeOffset?>("RevogadoEm")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revogado_em");
 

@@ -39,6 +39,18 @@ A leitura da assinatura fica num cache por empresa de 30 s, esquecido na hora qu
 assinatura muda pela Api (assentos, compra confirmada, webhook). Mudança feita direto no
 banco ou por outra instância leva até 30 s para valer.
 
+### Acesso de agora, em toda rota
+
+As permissões viajam no access token, mas quem decide é o acesso **de agora**: toda rota
+autenticada (menos `/api/auth/**` e `/api/publico/**`) confere se o usuário continua ativo
+e troca as permissões do token pelas do perfil atual. Rebaixar alguém, mudar as
+permissões de um perfil, desativar ou remover vale na próxima requisição da pessoa — e não
+quando o token dela vencer. Usuário desativado ou removido responde **401**
+`ACESSO_REVOGADO` (e o refresh também é recusado).
+
+O mesmo desenho da assinatura: cache de 30 s por usuário, esquecido na hora quando o time
+ou os perfis mudam pela Api.
+
 ## Autenticação
 
 ```
@@ -65,6 +77,13 @@ refresh token próprios — para o produto que pediu (`produto` no corpo, senão
 `X-Produto`, senão `agendamento-atendimento`; o mesmo critério do login). O app que
 recebeu a sessão chama isto **uma vez**, guarda o par dele e dali em diante renova só o
 seu com `/refresh`. Token revogado, vencido ou desconhecido: **401** `REFRESH_INVALIDO`.
+
+A rotação é atômica: dois `/refresh` ao mesmo tempo com o mesmo token (duas abas, um retry)
+não saem os dois com par novo — só o primeiro gira; o outro recebe **401**
+`REFRESH_INVALIDO`. Quem divide o token entre abas deve adotar o par que a outra já gravou
+(é o que o painel web faz) em vez de renovar de novo.
+
+O slug da empresa no login não diferencia maiúsculas.
 
 ### Convite
 
