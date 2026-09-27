@@ -121,7 +121,11 @@ public static class Mapeamentos
         v.Itens.Select(i => new VendaItemDto(
             i.Id, i.ItemCatalogoId, i.Tipo, i.Nome, i.Quantidade, i.PrecoUnitario,
             i.DescontoValor, i.TotalLiquido, i.ComissaoPercentual, i.ComissaoValor,
-            i.VendedorId ?? v.VendedorId,
+            // Só o vendedor PRÓPRIO da linha; nulo é "herda o da venda". Devolver o herdado
+            // aqui fazia o app reenviá-lo como dono da linha no próximo salvamento — e dali
+            // em diante trocar o vendedor da venda não mudava mais quem levava a comissão.
+            i.VendedorId,
+            // O nome é o de quem leva de fato, próprio ou herdado.
             i.Vendedor?.Nome ?? (i.VendedorId is null ? v.Vendedor?.Nome : null))).ToList(),
         v.Pagamentos.Select(p => p.ParaDto()).ToList(),
         v.VendedorId, v.Vendedor?.Nome, v.TotalComissao,
@@ -143,14 +147,19 @@ public static class Mapeamentos
         p.Nsu, p.Bandeira, p.UltimosDigitos, p.AdquirenteChave,
         p.Estornado, p.EstornadoEm, p.MotivoEstorno);
 
+    /// <remarks>
+    /// A que passou do prazo sai como Expirada mesmo antes de alguém gravar isso: aberta na
+    /// resposta, ela prendia o caixa numa cobrança que não pode mais ser concluída.
+    /// </remarks>
     public static CobrancaDto ParaDto(this Cobranca c, bool jaExistia = false) => new(
-        c.Id, c.VendaId, c.Status, c.Meio, c.FormaPagamentoId,
+        c.Id, c.VendaId, c.Expirou(DateTimeOffset.UtcNow) ? StatusCobranca.Expirada : c.Status,
+        c.Meio, c.FormaPagamentoId,
         c.FormaPagamento?.Nome ?? string.Empty, c.Valor, c.Parcelas,
         c.ChaveIdempotencia, c.AdquirenteChave, c.TerminalSerie,
         c.Nsu, c.CodigoAutorizacao, c.Bandeira, c.UltimosDigitos,
         c.TransacaoExternaId, c.PixCopiaECola, c.ValorTaxaReal,
         c.MotivoRecusa, c.EnviadaEm, c.RespondidaEm, c.ExpiraEm,
-        c.EstaAberta, c.PagamentoId, jaExistia);
+        c.EstaAberta && !c.Expirou(DateTimeOffset.UtcNow), c.PagamentoId, jaExistia);
 
     public static FormaPagamentoDto ParaDto(this FormaPagamento f) => new(
         f.Id, f.Nome, f.Codigo, f.Ativa, f.PermiteParcelamento, f.MaximoParcelas,

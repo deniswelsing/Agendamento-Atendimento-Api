@@ -39,6 +39,9 @@ public class CobrancasController : ControllerBaseApi
     public async Task<ActionResult<CobrancaDto>> Abrir(
         long vendaId, AbrirCobrancaRequest req, CancellationToken ct)
     {
+        // Uma cobrança por vez na venda: sem trava, cinco toques com chaves diferentes abriam
+        // cinco cobranças do mesmo saldo, e dois com a mesma chave davam 500.
+        await using var trava = await _db.TravarVendaAsync(vendaId, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == vendaId, ct),
@@ -55,13 +58,16 @@ public class CobrancasController : ControllerBaseApi
                 venda, req.FormaPagamentoId, req.Valor, req.Meio, req.ChaveIdempotencia,
                 req.Parcelas, req.AdquirenteChave, req.TerminalSerie, ct);
 
+            await trava.ConfirmarAsync(ct);
+
             // Repetição devolve 200 com o mesmo corpo; criação de verdade devolve 201.
             var dto = cobranca.ParaDto(jaExistia);
             return jaExistia
                 ? Ok(dto)
                 : CreatedAtAction(nameof(Obter), new { id = cobranca.Id }, dto);
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+                                   && ex is not RecusaDeNegocioException)
         {
             throw new RegraDeNegocioException(ex.Message, "COBRANCA_INVALIDA");
         }
@@ -83,13 +89,15 @@ public class CobrancasController : ControllerBaseApi
     public async Task<ActionResult<CobrancaDto>> Enviar(
         long id, EnviarCobrancaRequest req, CancellationToken ct)
     {
+        await using var trava = await TravarVendaDaCobrancaAsync(id, ct);
         var cobranca = NaoNulo(await _cobrancas.ObterAsync(id, ct), "Cobrança não encontrada.");
         try
         {
             await _cobrancas.MarcarEnviadaAsync(cobranca, req.PixCopiaECola, ct);
+            await trava.ConfirmarAsync(ct);
             return Ok(cobranca.ParaDto());
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException ex) when (ex is not RecusaDeNegocioException)
         {
             throw new RegraDeNegocioException(ex.Message, "COBRANCA_FECHADA");
         }
@@ -104,17 +112,23 @@ public class CobrancasController : ControllerBaseApi
     public async Task<ActionResult<CobrancaDto>> Concluir(
         long id, ConcluirCobrancaRequest req, CancellationToken ct)
     {
+        // A resposta do terminal chegando duas vezes ao mesmo tempo (duplo clique em
+        // "Receber pagamento") lançava o pagamento duas vezes: as duas leituras viam a
+        // cobrança aberta. Com a trava, a segunda relê a cobrança já aprovada e devolve o
+        // mesmo pagamento.
+        await using var trava = await TravarVendaDaCobrancaAsync(id, ct);
         var cobranca = NaoNulo(await _cobrancas.ObterAsync(id, ct), "Cobrança não encontrada.");
         try
         {
             await _cobrancas.ConcluirAsync(cobranca, new ResultadoDaCaptura(
                 req.Aprovada, req.Nsu, req.CodigoAutorizacao, req.Bandeira, req.UltimosDigitos,
                 req.TransacaoExternaId, req.ValorTaxaReal, req.MotivoRecusa), ct);
+            await trava.ConfirmarAsync(ct);
 
             var atualizada = await _cobrancas.ObterAsync(id, ct);
             return Ok(atualizada!.ParaDto());
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException ex) when (ex is not RecusaDeNegocioException)
         {
             throw new RegraDeNegocioException(ex.Message, "COBRANCA_FECHADA");
         }
@@ -125,16 +139,32 @@ public class CobrancasController : ControllerBaseApi
     public async Task<ActionResult<CobrancaDto>> Cancelar(
         long id, CancelarCobrancaRequest req, CancellationToken ct)
     {
+        await using var trava = await TravarVendaDaCobrancaAsync(id, ct);
         var cobranca = NaoNulo(await _cobrancas.ObterAsync(id, ct), "Cobrança não encontrada.");
         try
         {
             await _cobrancas.CancelarAsync(cobranca, req.Motivo, ct);
+            await trava.ConfirmarAsync(ct);
             return Ok(cobranca.ParaDto());
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException ex) when (ex is not RecusaDeNegocioException)
         {
             throw new RegraDeNegocioException(ex.Message, "COBRANCA_FECHADA");
         }
+    }
+
+    /// <summary>
+    /// A trava da venda desta cobrança. A venda é descoberta sem carregar a cobrança no
+    /// contexto: o que fosse lido antes da trava podia estar velho quando ela chegasse.
+    /// </summary>
+    private async Task<TransacaoDaAgenda> TravarVendaDaCobrancaAsync(long cobrancaId, CancellationToken ct)
+    {
+        var vendaId = await _db.Cobrancas.AsNoTracking()
+            .Where(c => c.Id == cobrancaId)
+            .Select(c => (long?)c.VendaId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new NaoEncontradoException("Cobrança não encontrada.");
+        return await _db.TravarVendaAsync(vendaId, ct);
     }
 
     /// <summary>Cobranças de uma venda, da mais recente para a mais antiga.</summary>
@@ -178,14 +208,8 @@ public class CobrancasController : ControllerBaseApi
                 "Só um pagamento confirmado é conciliado.", "STATUS_INVALIDO");
         }
 
-        try
-        {
-            _vendas.ConciliarTaxa(pagamento, req.ValorTaxaReal);
-        }
-        catch (ArgumentOutOfRangeException ex)
-        {
-            throw new RegraDeNegocioException(ex.Message, "TAXA_INVALIDA");
-        }
+        // Taxa fora de 0..valor volta como 400 TAXA_INVALIDA (RecusaDeNegocioException).
+        _vendas.ConciliarTaxa(pagamento, req.ValorTaxaReal);
 
         await _db.SaveChangesAsync(ct);
         return Ok(pagamento.ParaDto());

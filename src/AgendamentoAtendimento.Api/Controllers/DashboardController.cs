@@ -46,16 +46,32 @@ public class DashboardController : ControllerBaseApi
             .Select(a => a.Status)
             .ToListAsync(ct);
 
-        var vendasDoMes = await _db.Vendas
-            .AsNoTracking()
-            .Where(v => v.CriadoEm >= inicioMes && v.CriadoEm < fimDia)
-            .Select(v => new { v.CriadoEm, v.Status, v.TotalLiquido })
+        // Faturamento é dinheiro que entrou: os recebimentos confirmados no dia (e no mês),
+        // menos o que foi estornado no mesmo período. Antes contava a venda pela data em
+        // que foi CRIADA e só quando já estava quitada: um recebimento parcial não aparecia,
+        // e a venda de ontem paga hoje entrava no dia de ontem.
+        var recebidos = await _db.Pagamentos.AsNoTracking()
+            .Where(p => (p.Status == StatusPagamento.Confirmado || p.Status == StatusPagamento.Estornado)
+                        && p.ConfirmadoEm >= inicioMes && p.ConfirmadoEm < fimDia)
+            .Select(p => new { p.VendaId, p.Valor, ConfirmadoEm = p.ConfirmadoEm!.Value })
+            .ToListAsync(ct);
+        var estornados = await _db.Pagamentos.AsNoTracking()
+            .Where(p => p.Status == StatusPagamento.Estornado
+                        && p.EstornadoEm >= inicioMes && p.EstornadoEm < fimDia)
+            .Select(p => new { p.Valor, EstornadoEm = p.EstornadoEm!.Value })
             .ToListAsync(ct);
 
-        var pagasNoDia = vendasDoMes
-            .Where(v => v.Status == StatusVenda.Paga && v.CriadoEm >= inicioDia)
-            .ToList();
-        var pagasNoMes = vendasDoMes.Where(v => v.Status == StatusVenda.Paga).ToList();
+        var faturamentoHoje =
+            recebidos.Where(p => p.ConfirmadoEm >= inicioDia).Sum(p => p.Valor)
+            - estornados.Where(p => p.EstornadoEm >= inicioDia).Sum(p => p.Valor);
+        var faturamentoMes = recebidos.Sum(p => p.Valor) - estornados.Sum(p => p.Valor);
+        var vendasQueReceberam = recebidos.Select(p => p.VendaId).Distinct().Count();
+
+        // Em aberto é toda venda que ainda tem o que receber — de qualquer mês: a de agosto
+        // que ninguém pagou continua devendo em setembro.
+        var vendasEmAberto = await _db.Vendas.AsNoTracking()
+            .CountAsync(v => (v.Status == StatusVenda.Aberta || v.Status == StatusVenda.AguardandoPagamento)
+                             && v.TotalLiquido > v.TotalPago, ct);
 
         var tenant = await _db.Tenants.AsNoTracking().FirstAsync(t => t.Id == TenantId, ct);
 
@@ -68,14 +84,13 @@ public class DashboardController : ControllerBaseApi
             AtendimentosConcluidos: agendamentosDoDia.Count(s => s == StatusAgendamento.Concluido),
             ClientesAtivos: await _db.Clientes.CountAsync(c => c.Ativo, ct),
             ClientesEmpresa: await _db.Clientes.CountAsync(c => c.Ativo && c.Tipo == TipoCliente.Empresa, ct),
-            FaturamentoHoje: pagasNoDia.Sum(v => v.TotalLiquido),
-            FaturamentoMes: pagasNoMes.Sum(v => v.TotalLiquido),
-            TicketMedio: pagasNoMes.Count == 0
+            FaturamentoHoje: faturamentoHoje,
+            FaturamentoMes: faturamentoMes,
+            // O que entrou no mês dividido pelas vendas que receberam no mês.
+            TicketMedio: vendasQueReceberam == 0
                 ? 0m
-                : decimal.Round(pagasNoMes.Sum(v => v.TotalLiquido) / pagasNoMes.Count, 2,
-                    MidpointRounding.AwayFromZero),
-            VendasEmAberto: vendasDoMes.Count(v =>
-                v.Status is StatusVenda.Aberta or StatusVenda.AguardandoPagamento),
+                : decimal.Round(faturamentoMes / vendasQueReceberam, 2, MidpointRounding.AwayFromZero),
+            VendasEmAberto: vendasEmAberto,
             Moeda: tenant.Moeda));
     }
 }

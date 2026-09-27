@@ -32,6 +32,12 @@ public static class TravaDeAgenda
     /// </summary>
     public const int Espaco = 0x41474E44;
 
+    /// <summary>
+    /// Espaço da trava de uma venda: "VEND". Receber, cobrar, fechar, editar e cancelar a
+    /// mesma venda passam um de cada vez.
+    /// </summary>
+    public const int EspacoDaVenda = 0x56454E44;
+
     public static async Task<TransacaoDaAgenda> TravarAgendaAsync(
         this AppDbContext db, CancellationToken ct = default)
     {
@@ -45,6 +51,37 @@ public static class TravaDeAgenda
         var tenantId = db.Contexto.TenantId
             ?? throw new InvalidOperationException("Travar a agenda exige um tenant no contexto.");
 
+        // Id acima de int só aconteceria com bilhões de empresas; truncar ali só faria
+        // duas delas dividirem a fila, nunca furar a trava.
+        return await TravarAsync(db, Espaco, unchecked((int)tenantId), ct);
+    }
+
+    /// <summary>
+    /// A trava de uma venda. Todo caminho que mexe no dinheiro dela confere o saldo e o
+    /// status e depois grava — e, sem trava, dois cliques ou duas abas passavam os dois pela
+    /// conferência: o mesmo saldo recebido duas vezes, a mesma cobrança concluída duas
+    /// vezes, o estoque baixado duas vezes. Quem chega depois espera o primeiro confirmar e
+    /// relê a venda já com o que ele gravou.
+    /// </summary>
+    /// <remarks>
+    /// Carregue a venda DEPOIS de travar: o que foi lido antes pode estar velho.
+    /// </remarks>
+    public static Task<TransacaoDaAgenda> TravarVendaAsync(
+        this AppDbContext db, long vendaId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        // Duas vendas com os mesmos 32 bits de baixo só dividiriam a fila.
+        return TravarAsync(db, EspacoDaVenda, unchecked((int)vendaId), ct);
+    }
+
+    private static async Task<TransacaoDaAgenda> TravarAsync(
+        AppDbContext db, int espaco, int chave, CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql())
+        {
+            return TransacaoDaAgenda.Nenhuma;
+        }
+
         // Já dentro de uma transação de quem chamou: a trava entra nela e solta junto.
         var propria = db.Database.CurrentTransaction is null
             ? await db.Database.BeginTransactionAsync(ct)
@@ -52,11 +89,8 @@ public static class TravaDeAgenda
 
         try
         {
-            // Id acima de int só aconteceria com bilhões de empresas; truncar ali só faria
-            // duas delas dividirem a fila, nunca furar a trava.
-            var chave = unchecked((int)tenantId);
             await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock({Espaco}, {chave})", ct);
+                $"SELECT pg_advisory_xact_lock({espaco}, {chave})", ct);
         }
         catch
         {

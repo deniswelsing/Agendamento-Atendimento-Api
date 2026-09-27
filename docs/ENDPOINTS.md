@@ -12,7 +12,8 @@ Datas e horas: todo `DateTimeOffset` (ex.: `inicio`, `fim`) é um instante real 
 Horário de funcionamento, `horaDe`/`horaAte` e parâmetros `DateOnly` (`data`, `de`,
 `ate`) são interpretados no fuso da empresa (`Tenant.FusoHorario`).
 
-Erros voltam como `{ "message": "...", "code": "..." }`.
+Erros voltam como `{ "message": "...", "code": "..." }`. Texto maior que a coluna ou número
+fora da faixa do banco é **400** (`CAMPO_LONGO`, `VALOR_FORA_DA_FAIXA`), e não 500.
 
 | Status | Significado |
 |---|---|
@@ -119,10 +120,13 @@ GET /api/bootstrap -> usuario, tenant, assinatura, catalogoPermissoes,
 ```
 
 `opcoes` traz os rótulos dos enums (`tipoCliente`, `statusAgendamento`, `statusVenda`,
-`cicloCobranca`, `diaDaSemana`…) para que o app não traduza nada por conta própria.
+`statusPagamento`, `meioDeCaptura`, `statusCobranca`, `cicloCobranca`, `diaDaSemana`…) para
+que o app não traduza nada por conta própria.
 
 Cada lista só vem se o usuário tiver a permissão correspondente (`time.ver`,
-`financeiro.ver`, `horarios.ver`).
+`financeiro.ver`, `horarios.ver`). `vendedores` (`{ usuarioId, nome }` de quem está ativo no
+time) vai para quem tem `vendas.criar` ou `vendas.editar`: é o seletor de quem leva a
+comissão, e sem ele a recepção e o financeiro viam só "Sem vendedor".
 
 `catalogoRecursos` traz o catálogo inteiro já resolvido contra o plano assinado — cada
 recurso com `incluso` e o `planoMinimo` que o libera — e `recursosLiberados` é só a lista
@@ -197,7 +201,37 @@ pedido para o mesmo atendimento é recusado com **400** e `code:
 ATENDIMENTO_JA_FATURADO`.
 
 É o caminho que o botão **Finalizar e cobrar** da agenda usa: conclui o atendimento, cria
-a venda com os serviços agendados e abre o recebimento.
+a venda com os serviços agendados e abre o recebimento. Só atendimento **em andamento ou
+concluído**, com serviço, vira venda (senão **400** `ATENDIMENTO_NAO_ENTREGUE`), e o
+faturamento passa pela trava da agenda: dois pedidos ao mesmo tempo para o mesmo
+atendimento criam uma venda só.
+
+### Fechar a venda
+
+A venda nasce **aberta**: os itens ainda mudam (`PUT /api/vendas/{id}`). Ela **fecha** no
+primeiro destes, o que vier antes:
+
+- `POST /api/vendas/{id}/finalizar`;
+- o primeiro recebimento (`POST /api/vendas/{id}/pagamentos`);
+- a primeira cobrança (`POST /api/vendas/{id}/cobrancas`) — antes de o cliente ser cobrado.
+
+Fechar baixa o estoque dos produtos, uma vez só; sem estoque suficiente, **400** `ESTOQUE`.
+Fechada, a venda não muda mais: `PUT` responde **400** `VENDA_FECHADA`. Antes, receber
+com a venda aberta só trocava o status — a venda saía de "aberta" sem passar pelo
+fechamento e o estoque nunca baixava.
+
+Receber, cobrar, fechar, editar e cancelar a mesma venda passam por uma trava da venda: dois
+cliques ou duas abas não recebem o mesmo saldo duas vezes.
+
+Recebimento manual (`/pagamentos`): o valor é arredondado a centavos antes da conferência
+(R$ 0,004 é **400** `VALOR_INVALIDO`); a forma precisa estar ativa (`FORMA_INATIVA`) e as
+parcelas ficam entre 1 e o máximo dela — 1 quando ela não parcela (`PARCELAS_INVALIDAS`);
+com uma cobrança em andamento na venda, **400** `VENDA_COM_COBRANCA` — o cliente pagaria
+duas vezes quando a cobrança fosse aprovada.
+
+Itens: quantidade, preço e desconto são arredondados a centavos; o desconto de uma linha
+não passa do valor dela, nem o desconto geral do valor dos itens (`DESCONTO_INVALIDO`).
+Venda cancelada ou estornada tem `saldoAberto` zero.
 
 ### Comissão
 
@@ -211,6 +245,10 @@ para receber é número solto.
 
 `Venda.vendedorId` é quem leva. Numa venda que nasce de atendimento ele já vem preenchido
 com o responsável do agendamento; `POST /api/vendas` aceita `vendedorId` para mandar outro.
+
+Em cada item, `vendedorId` é só o vendedor **próprio** da linha — nulo quando ela herda o da
+venda — e `vendedorNome` é o de quem leva de fato. Reenvie o `vendedorId` do item como veio:
+trocar o vendedor da venda muda a comissão das linhas que herdam.
 
 As vendas anteriores a esta mudança ficaram com comissão zero e sem vendedor, de
 propósito: copiar o percentual atual do catálogo inventaria uma comissão que ninguém
@@ -226,7 +264,8 @@ Cancelar (`DELETE /api/vendas/{id}`) continua exigindo que nenhum recebimento es
 confirmado (`VENDA_COM_PAGAMENTO`) — e agora há como chegar lá. O estorno marca o
 pagamento como `Estornado` (ele continua na lista, com `estornado: true`, `estornadoEm` e
 `motivoEstorno`), refaz `totalPago` e `saldoAberto`, e a venda **paga** volta a
-`AguardandoPagamento` (a aberta continua aberta). Estornado todo, a venda cancela.
+`AguardandoPagamento` (a aberta continua aberta). Estornado todo, a venda pode ser
+cancelada.
 
 Recusas: estornar de novo o mesmo recebimento é **400** `PAGAMENTO_JA_ESTORNADO`; um
 recebimento que não está confirmado, **400** `PAGAMENTO_NAO_CONFIRMADO`; motivo com mais
@@ -239,6 +278,26 @@ Cancelar uma venda **finalizada** devolve ao estoque o que a finalização baixo
 finalizadas antes desta versão não sabem se baixaram (a coluna `estoque_baixado` nasceu
 `false`) e não devolvem nada — melhor que devolver estoque que nunca saiu. Cancelar de novo
 uma venda cancelada responde 204 sem mexer em nada.
+
+### Painel
+
+`GET /api/dashboard/resumo` conta o faturamento pelo **dinheiro que entrou**: os
+recebimentos confirmados no dia (e no mês) menos o que foi estornado no mesmo período. O
+ticket médio é o faturamento do mês dividido pelas vendas que receberam no mês, e "vendas
+em aberto" são todas as que ainda têm saldo a receber, de qualquer mês. Antes o painel
+contava a venda pela data em que foi criada e só quando já estava quitada: um recebimento
+parcial não aparecia, e a venda de ontem paga hoje entrava no dia de ontem. Sem `data`, o
+dia é o de hoje no fuso da empresa.
+
+### Cadastros com história
+
+`DELETE /api/clientes/{id}` é para cadastro feito por engano: cliente que já tem venda,
+atendimento, pacote ou lugar na fila de espera responde **400** `CLIENTE_COM_HISTORICO` —
+desative-o (`isAtivo: false`). Excluído, as vendas dele sumiam das listas (inclusive uma
+aberta, com saldo a receber) e continuavam contando no painel.
+
+`DELETE /api/formas-pagamento/{id}` responde **204** quando excluiu e **200** com a forma
+(`ativa: false`) quando ela já tinha recebimentos e por isso só foi desativada.
 
 ## Cobrança: maquininha, Pix e gateway
 
@@ -267,7 +326,13 @@ vira dinheiro cobrado e não lançado.
 - `concluir` é idempotente: a mesma resposta chegando duas vezes não duplica o lançamento.
 - Uma cobrança aberta expira em 10 minutos e **nunca** vira pagamento depois disso. Se o
   dinheiro entrou mesmo assim, ele aparece na conciliação como transação sem lançamento —
-  um problema visível, que é melhor que um lançamento inventado.
+  um problema visível, que é melhor que um lançamento inventado. A que passou do prazo já
+  sai como `Expirada` (e `estaAberta: false`) nas leituras, e `cancelar` nela só registra a
+  expiração: ela não prende mais o caixa.
+- Abrir, enviar, concluir e cancelar passam pela trava da venda: a mesma resposta do
+  terminal chegando duas vezes ao mesmo tempo lança um pagamento só.
+- `valorTaxaReal` (no `concluir` ou no `conciliar`) fica entre 0 e o valor recebido; fora
+  disso, **400** `TAXA_INVALIDA`.
 
 ### Taxa estimada e taxa real
 

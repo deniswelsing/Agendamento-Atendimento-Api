@@ -581,7 +581,14 @@ public sealed record BootstrapDto(
     IReadOnlyList<MembroTimeDto> Time,
     IReadOnlyList<FormaPagamentoDto> FormasPagamento,
     IReadOnlyList<HorarioFuncionamentoDto> HorarioFuncionamento,
-    IReadOnlyDictionary<string, IReadOnlyList<OpcaoDto>> Opcoes);
+    IReadOnlyDictionary<string, IReadOnlyList<OpcaoDto>> Opcoes,
+    /// <summary>
+    /// Quem pode levar a comissão de uma venda: as pessoas ativas do time, só nome e id.
+    /// Vai para quem vende (`vendas.criar` ou `vendas.editar`) — o `Time` completo continua
+    /// só com `time.ver`, e sem esta lista a recepção e o financeiro viam o seletor de
+    /// vendedor vazio.
+    /// </summary>
+    IReadOnlyList<PessoaResumoDto>? Vendedores = null);
 
 // --------------------------------------------------------------------- pacotes
 public sealed record PacoteModeloDto(
