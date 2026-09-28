@@ -174,8 +174,10 @@ public class PacoteAgendaService
         PacoteCliente vinculo,
         CancellationToken ct)
     {
+        // Com o cliente: a sessão não é proposta no horário em que ele já tem atendimento,
+        // que marcar recusaria (CLIENTE_JA_AGENDADO).
         var dia = await _disponibilidade.ObterDiaAsync(
-            data, duracao, vinculo.ResponsavelPreferidoId, ct, itens);
+            data, duracao, vinculo.ResponsavelPreferidoId, ct, itens, clienteId: vinculo.ClienteId);
 
         if (dia.Livres.Count == 0)
         {

@@ -467,6 +467,7 @@ horário e pessoa: antes entravam 4–5 (10 de 10 pela página pública); agora 
   e um atendimento com um serviço da Bruna e outro do Caio era sempre recusado.
 - O mesmo cliente (pessoa) não fica em dois atendimentos no mesmo horário, nem em duas vagas
   da mesma turma: **400** `CLIENTE_JA_AGENDADO`. Empresa pode — ela manda gente diferente.
+  A regra vale em toda porta que marca: a agenda, a sessão de pacote e a página pública.
 - Remarcar (`PUT`) move, não reprecifica: o mesmo serviço mantém o preço e o nome que já
   tinha. Mudar o horário de um atendimento confirmado (ou de quem faltou) o devolve a
   `Agendado` — a confirmação era do horário antigo. Sessão de pacote continua pré-paga
@@ -535,7 +536,9 @@ Com `exigeAprovacao`, o pedido nasce `PendenteAprovacao` e **já segura o horár
 deixaria dois clientes pedirem o mesmo encaixe. Recusar é o que devolve o horário.
 
 Recusas: `AntecedenciaInsuficiente`, `ForaDaJanela`, `ServicoIndisponivel`,
-`HorarioIndisponivel`, `DadosIncompletos` (400) e `LimiteDiario` (**429**). E-mail e
+`HorarioIndisponivel`, `DadosIncompletos`, `ClienteJaAgendado` (400) e `LimiteDiario`
+(**429**). `ClienteJaAgendado` é o cliente do e-mail que já tem atendimento nesse horário,
+com qualquer pessoa: a página o punha em dois lugares ao mesmo tempo. E-mail e
 telefone com formato inválido são `EMAIL_INVALIDO` / `TELEFONE_INVALIDO`; nome acima de 150
 caracteres, observação acima de 1000 e motivo de desmarcar acima de 500, `CAMPO_LONGO`.
 
@@ -627,6 +630,8 @@ da lista, como sempre esteve.
   aviso e a tela, rodando depois, dizia que nada vencia.
 - Serviço excluído do catálogo depois de entrar no pacote sai das sessões marcadas daí em
   diante (antes, marcar dava 500); sem nenhum serviço restante, **400** `SERVICO_INVALIDO`.
+- A sessão não põe o cliente em dois lugares: com outro atendimento dele no mesmo horário,
+  **400** `CLIENTE_JA_AGENDADO`, como na agenda. As propostas já pulam esses horários.
 
 ## Lembretes e rotinas
 

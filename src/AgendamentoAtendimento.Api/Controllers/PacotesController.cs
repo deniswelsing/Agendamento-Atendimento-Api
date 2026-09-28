@@ -507,6 +507,17 @@ public class PacotesController : ControllerBaseApi
     private async Task<ActionResult<AgendamentoDto>> ConcluirSessaoAsync(
         Agendamento agendamento, TransacaoDaAgenda trava, CancellationToken ct)
     {
+        // O cliente também não fica em dois lugares: a agenda recusava o mesmo horário com
+        // outra pessoa, e a sessão do pacote o marcava.
+        var cliente = await _db.Clientes.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == agendamento.ClienteId, ct);
+        if (cliente is not null && await _db.ClienteJaTemAtendimentoAsync(
+                cliente, agendamento.Inicio, agendamento.Fim, null, ct))
+        {
+            throw new RegraDeNegocioException(
+                $"{cliente.NomeExibicao} já tem um atendimento nesse horário.", "CLIENTE_JA_AGENDADO");
+        }
+
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
         await trava.ConfirmarAsync(ct);

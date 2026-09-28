@@ -814,27 +814,13 @@ public class AgendamentosController : ControllerBaseApi
         escolhas is null ? req.ResponsavelId : null;
 
     /// <summary>
-    /// Uma pessoa não está em dois lugares ao mesmo tempo: o mesmo cliente não fica marcado
-    /// duas vezes no mesmo horário — nem com duas pessoas diferentes, nem ocupando duas
-    /// vagas da mesma turma. Empresa pode: ela manda gente diferente.
+    /// Uma pessoa não está em dois lugares ao mesmo tempo (<see cref="AgendaDoCliente"/>).
     /// </summary>
     private async Task ValidarClienteLivreAsync(
         Domain.Clientes.Cliente cliente, DateTimeOffset inicio, DateTimeOffset fim,
         long? ignorarAgendamentoId, CancellationToken ct)
     {
-        if (cliente.Tipo != Domain.Clientes.TipoCliente.Pessoa)
-        {
-            return;
-        }
-
-        var jaMarcado = await _db.Agendamentos.AsNoTracking().AnyAsync(a =>
-            a.ClienteId == cliente.Id
-            && a.Id != (ignorarAgendamentoId ?? 0)
-            && a.Status != StatusAgendamento.Cancelado
-            && a.Status != StatusAgendamento.NaoCompareceu
-            && a.Inicio < fim && a.Fim > inicio, ct);
-
-        if (jaMarcado)
+        if (await _db.ClienteJaTemAtendimentoAsync(cliente, inicio, fim, ignorarAgendamentoId, ct))
         {
             throw new RegraDeNegocioException(
                 $"{cliente.NomeExibicao} já tem um atendimento nesse horário.", "CLIENTE_JA_AGENDADO");
