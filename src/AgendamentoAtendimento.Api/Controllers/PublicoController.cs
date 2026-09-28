@@ -26,11 +26,17 @@ public class PublicoController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly PaginaPublicaService _paginas;
+    private readonly LembreteService? _lembretes;
+    private readonly ListaDeEsperaService? _fila;
 
-    public PublicoController(AppDbContext db, PaginaPublicaService paginas)
+    public PublicoController(
+        AppDbContext db, PaginaPublicaService paginas,
+        LembreteService? lembretes = null, ListaDeEsperaService? fila = null)
     {
         _db = db;
         _paginas = paginas;
+        _lembretes = lembretes;
+        _fila = fila;
     }
 
     private static DateTimeOffset Agora => DateTimeOffset.UtcNow;
@@ -110,9 +116,45 @@ public class PublicoController : ControllerBase
         var (resultado, dia) = await _paginas.DisponibilidadeAsync(
             pagina, data, itensIds ?? Array.Empty<long>(), responsavelId, Agora, ct);
 
-        return resultado.Ok && dia is not null
-            ? Ok(dia.ParaDto())
-            : Recusa(resultado);
+        if (!resultado.Ok || dia is null)
+        {
+            return Recusa(resultado);
+        }
+
+        var dto = dia.ParaDto();
+        return Ok(pagina.PermiteEscolherProfissional ? dto with { TotalAgendamentos = 0 } : SemOTime(dto));
+    }
+
+    /// <summary>
+    /// Os horários sem ninguém do time. Com a escolha de profissional desligada, a lista
+    /// de profissionais já não saía — mas cada encaixe levava o id, o nome e os candidatos
+    /// de quem atenderia: o time inteiro, pela porta aberta. E o total de atendimentos do
+    /// dia da empresa não é assunto de quem está marcando.
+    /// </summary>
+    private static DiaDaAgendaDto SemOTime(DiaDaAgendaDto dia)
+    {
+        static SlotDto Anonimo(SlotDto slot) => slot with
+        {
+            ResponsavelId = null,
+            ResponsavelNome = null,
+            Atribuicoes = slot.Atribuicoes
+                .Select(a => a with
+                {
+                    ResponsavelId = null,
+                    ResponsavelNome = null,
+                    Candidatos = Array.Empty<PessoaResumoDto>(),
+                })
+                .ToList(),
+        };
+
+        return dia with
+        {
+            TotalAgendamentos = 0,
+            Livres = dia.Livres.Select(Anonimo).ToList(),
+            Sugestoes = dia.Sugestoes?
+                .Select(s => s with { Slots = s.Slots.Select(Anonimo).ToList() })
+                .ToList(),
+        };
     }
 
     /// <summary>
@@ -134,6 +176,21 @@ public class PublicoController : ControllerBase
             return PaginaIndisponivel();
         }
 
+        // O que o cliente digita tem forma e tamanho: "x" não é telefone, "abc" não é
+        // e-mail, e um texto maior que a coluna derrubava a porta aberta com 500.
+        if (!string.IsNullOrWhiteSpace(req.Email) && !Validacoes.EmailValido(req.Email))
+        {
+            return BadRequest(new ErroApi("O e-mail informado não é válido.", "EMAIL_INVALIDO"));
+        }
+        if (!string.IsNullOrWhiteSpace(req.Telefone) && !Validacoes.TelefoneValido(req.Telefone))
+        {
+            return BadRequest(new ErroApi("O telefone informado não é válido.", "TELEFONE_INVALIDO"));
+        }
+        Validacoes.Cabe(req.Nome, 150, "O nome");
+        Validacoes.Cabe(req.Email, 200, "O e-mail");
+        Validacoes.Cabe(req.Telefone, 30, "O telefone");
+        Validacoes.Cabe(req.Observacoes, 1000, "A observação");
+
         var (resultado, agendamento) = await _paginas.AgendarAsync(
             pagina, req.Nome, req.Email, req.Telefone, req.ItensIds ?? Array.Empty<long>(),
             req.Inicio, req.ResponsavelId, req.Observacoes, Agora, ct);
@@ -141,6 +198,20 @@ public class PublicoController : ControllerBase
         if (!resultado.Ok || agendamento is null)
         {
             return Recusa(resultado);
+        }
+
+        // Quem marcou pela página é avisado como quem foi marcado pelo time (o pedido
+        // pendente só quando for aprovado), e sai da fila de espera se estava nela. Só a
+        // agenda fazia as duas coisas.
+        if (_lembretes is not null)
+        {
+            await _lembretes.ReprogramarAsync(agendamento.Id, Agora, ct);
+        }
+        // O pedido que ainda espera aprovação não é compromisso: a espera só vira
+        // "Convertido" quando a empresa aprovar — recusado, o cliente continua na fila.
+        if (_fila is not null && agendamento.Status != StatusAgendamento.PendenteAprovacao)
+        {
+            await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
         }
 
         var completo = await _paginas.PorCodigoAsync(agendamento.CodigoPublico!, ct);
@@ -192,6 +263,8 @@ public class PublicoController : ControllerBase
                 "CANCELAMENTO_INDISPONIVEL"));
         }
 
+        Validacoes.Cabe(motivo, 500, "O motivo");
+
         if (agendamento.Status != StatusAgendamento.Cancelado)
         {
             agendamento.Status = StatusAgendamento.Cancelado;
@@ -199,6 +272,12 @@ public class PublicoController : ControllerBase
                 ? "Cancelado pelo cliente na página de agendamento."
                 : motivo.Trim();
             await _db.SaveChangesAsync(ct);
+
+            // Desmarcado, os avisos que estavam na fila não saem mais.
+            if (_lembretes is not null)
+            {
+                await _lembretes.CancelarPendentesAsync(agendamento.Id, ct);
+            }
         }
 
         return Ok(await ComprovanteAsync(agendamento, pagina, ct));

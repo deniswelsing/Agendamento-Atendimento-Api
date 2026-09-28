@@ -60,16 +60,18 @@ public static class Mapeamentos
         i.Nome = r.Nome;
         i.Descricao = r.Descricao;
         i.Categoria = r.Categoria;
-        i.Preco = r.Preco;
-        i.Custo = r.Custo;
+        // Em centavos, como a coluna: devolver 10,555 e gravar 10,56 deixava a resposta
+        // discordando do que foi salvo.
+        i.Preco = decimal.Round(r.Preco, 2, MidpointRounding.AwayFromZero);
+        i.Custo = decimal.Round(r.Custo, 2, MidpointRounding.AwayFromZero);
         // Duração só faz sentido em serviço; estoque só em produto.
         i.DuracaoMinutos = r.Tipo == TipoItem.Servico ? r.DuracaoMinutos : null;
         i.Estoque = r.Tipo == TipoItem.Produto ? r.Estoque : null;
         i.CodigoDeBarras = r.CodigoDeBarras;
         i.ImagemUrl = r.ImagemUrl;
         i.Ativo = r.IsAtivo;
-        i.ComissaoPercentual = r.ComissaoPercentual;
-        i.TaxaPercentual = r.TaxaPercentual;
+        i.ComissaoPercentual = decimal.Round(r.ComissaoPercentual, 2, MidpointRounding.AwayFromZero);
+        i.TaxaPercentual = decimal.Round(r.TaxaPercentual, 2, MidpointRounding.AwayFromZero);
         // Produto não vai para a página pública de jeito nenhum: ela só agenda serviço.
         i.VisivelOnline = r.Tipo == TipoItem.Servico && r.VisivelOnline;
         // Turma só existe em serviço, e nunca abaixo de 1: capacidade zero seria um
@@ -121,7 +123,11 @@ public static class Mapeamentos
         v.Itens.Select(i => new VendaItemDto(
             i.Id, i.ItemCatalogoId, i.Tipo, i.Nome, i.Quantidade, i.PrecoUnitario,
             i.DescontoValor, i.TotalLiquido, i.ComissaoPercentual, i.ComissaoValor,
-            i.VendedorId ?? v.VendedorId,
+            // Só o vendedor PRÓPRIO da linha; nulo é "herda o da venda". Devolver o herdado
+            // aqui fazia o app reenviá-lo como dono da linha no próximo salvamento — e dali
+            // em diante trocar o vendedor da venda não mudava mais quem levava a comissão.
+            i.VendedorId,
+            // O nome é o de quem leva de fato, próprio ou herdado.
             i.Vendedor?.Nome ?? (i.VendedorId is null ? v.Vendedor?.Nome : null))).ToList(),
         v.Pagamentos.Select(p => p.ParaDto()).ToList(),
         v.VendedorId, v.Vendedor?.Nome, v.TotalComissao,
@@ -143,14 +149,19 @@ public static class Mapeamentos
         p.Nsu, p.Bandeira, p.UltimosDigitos, p.AdquirenteChave,
         p.Estornado, p.EstornadoEm, p.MotivoEstorno);
 
+    /// <remarks>
+    /// A que passou do prazo sai como Expirada mesmo antes de alguém gravar isso: aberta na
+    /// resposta, ela prendia o caixa numa cobrança que não pode mais ser concluída.
+    /// </remarks>
     public static CobrancaDto ParaDto(this Cobranca c, bool jaExistia = false) => new(
-        c.Id, c.VendaId, c.Status, c.Meio, c.FormaPagamentoId,
+        c.Id, c.VendaId, c.Expirou(DateTimeOffset.UtcNow) ? StatusCobranca.Expirada : c.Status,
+        c.Meio, c.FormaPagamentoId,
         c.FormaPagamento?.Nome ?? string.Empty, c.Valor, c.Parcelas,
         c.ChaveIdempotencia, c.AdquirenteChave, c.TerminalSerie,
         c.Nsu, c.CodigoAutorizacao, c.Bandeira, c.UltimosDigitos,
         c.TransacaoExternaId, c.PixCopiaECola, c.ValorTaxaReal,
         c.MotivoRecusa, c.EnviadaEm, c.RespondidaEm, c.ExpiraEm,
-        c.EstaAberta, c.PagamentoId, jaExistia);
+        c.EstaAberta && !c.Expirou(DateTimeOffset.UtcNow), c.PagamentoId, jaExistia);
 
     public static FormaPagamentoDto ParaDto(this FormaPagamento f) => new(
         f.Id, f.Nome, f.Codigo, f.Ativa, f.PermiteParcelamento, f.MaximoParcelas,

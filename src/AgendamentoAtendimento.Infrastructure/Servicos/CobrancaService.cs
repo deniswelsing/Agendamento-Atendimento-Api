@@ -1,6 +1,7 @@
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
 
@@ -80,6 +81,9 @@ public class CobrancaService
             return (existente, true);
         }
 
+        // Arredonda antes de conferir: R$ 0,001 passava como positivo e virava uma cobrança
+        // de R$ 0,00 — e um recebimento de zero ao ser concluída.
+        valor = decimal.Round(valor, 2, MidpointRounding.AwayFromZero);
         if (valor <= 0m)
         {
             throw new ArgumentOutOfRangeException(nameof(valor), "O valor da cobrança deve ser positivo.");
@@ -122,6 +126,16 @@ public class CobrancaService
 
         var forma = await _db.FormasPagamento.FirstOrDefaultAsync(f => f.Id == formaPagamentoId, ct)
             ?? throw new InvalidOperationException("Forma de pagamento não encontrada.");
+        VendaService.ValidarFormaEParcelas(forma, parcelas);
+
+        // Cobrar é o primeiro dinheiro da venda: se ela ainda está aberta, fecha agora — com
+        // a baixa do estoque e a conferência dele, ANTES de o cliente ser cobrado. Fechar
+        // só na aprovação obrigaria a escolher, com o dinheiro já capturado, entre recusar
+        // um pagamento de verdade e vender o que não há.
+        if (venda.Status == StatusVenda.Aberta)
+        {
+            await _vendas.FecharAsync(venda, ct);
+        }
 
         var cobranca = new Cobranca
         {
@@ -138,7 +152,26 @@ public class CobrancaService
         };
 
         _db.Cobrancas.Add(cobranca);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            // A mesma chave chegou por outro caminho entre a busca e a gravação (outra venda,
+            // outra instância): é a mesma tentativa, e a resposta é a cobrança que ficou.
+            // Antes, esta corrida virava um 500 em vez do "jaExistia" prometido.
+            _db.ChangeTracker.Clear();
+            var vencedora = await _db.Cobrancas
+                .Include(c => c.FormaPagamento)
+                .Include(c => c.Pagamento)
+                .FirstOrDefaultAsync(c => c.ChaveIdempotencia == chave, ct);
+            if (vencedora is null)
+            {
+                throw;
+            }
+            return (vencedora, true);
+        }
         return (cobranca, false);
     }
 
@@ -194,6 +227,14 @@ public class CobrancaService
         var forma = cobranca.FormaPagamento
             ?? await _db.FormasPagamento.FirstAsync(f => f.Id == cobranca.FormaPagamentoId, ct);
 
+        // Cobrança aberta antes de abrir passar a fechar a venda: a venda ainda está aberta e
+        // fecha aqui. O dinheiro já foi capturado, então baixa o estoque que houver em vez
+        // de recusar um pagamento de verdade.
+        if (venda.Status == StatusVenda.Aberta)
+        {
+            await _vendas.FecharAsync(venda, ct, exigirEstoque: false);
+        }
+
         var pagamento = _vendas.MontarPagamento(
             venda, forma, cobranca.Valor, cobranca.Parcelas, cobranca.Meio);
 
@@ -231,6 +272,19 @@ public class CobrancaService
         Cobranca cobranca, string? motivo = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(cobranca);
+
+        // A que passou do prazo não vira dinheiro nunca mais: desistir dela é só registrar
+        // que expirou. Recusar aqui deixava o caixa preso numa cobrança que ninguém podia
+        // concluir nem cancelar.
+        var agora = DateTimeOffset.UtcNow;
+        if (cobranca.Expirou(agora))
+        {
+            cobranca.Status = StatusCobranca.Expirada;
+            cobranca.RespondidaEm = agora;
+            await _db.SaveChangesAsync(ct);
+            return cobranca;
+        }
+
         ExigirAberta(cobranca);
 
         cobranca.Status = StatusCobranca.Cancelada;
@@ -249,22 +303,36 @@ public class CobrancaService
     public async Task<int> ExpirarVencidasAsync(CancellationToken ct = default)
     {
         var agora = DateTimeOffset.UtcNow;
-        var vencidas = await _db.Cobrancas
+        var vencidas = await _db.Cobrancas.AsNoTracking()
             .Where(c => (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
                         && c.ExpiraEm <= agora)
+            .Select(c => new { c.Id, c.VendaId })
             .ToListAsync(ct);
 
-        foreach (var cobranca in vencidas)
+        // Uma de cada vez, sob a trava da venda — a mesma de concluir: uma conclusão que
+        // passou da conferência um instante antes do prazo gravava "Aprovada", e esta
+        // rotina, com a leitura de antes, escrevia "Expirada" por cima (o pagamento ficava
+        // lançado, e a cobrança dizia que venceu). Relida depois da trava, ela já não está
+        // aberta e fica como está.
+        var expiradas = 0;
+        foreach (var vencida in vencidas)
         {
+            await using var trava = await _db.TravarVendaAsync(vencida.VendaId, ct);
+            var cobranca = await _db.Cobrancas.FirstOrDefaultAsync(c => c.Id == vencida.Id, ct);
+            if (cobranca is null
+                || cobranca.Status is not (StatusCobranca.Criada or StatusCobranca.EmAndamento))
+            {
+                continue;
+            }
+
             cobranca.Status = StatusCobranca.Expirada;
             cobranca.RespondidaEm = agora;
+            await _db.SaveChangesAsync(ct);
+            await trava.ConfirmarAsync(ct);
+            expiradas++;
         }
 
-        if (vencidas.Count > 0)
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        return vencidas.Count;
+        return expiradas;
     }
 
     private static void ExigirAberta(Cobranca cobranca)

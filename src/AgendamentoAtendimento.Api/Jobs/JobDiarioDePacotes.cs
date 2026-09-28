@@ -79,6 +79,7 @@ public class JobDiarioDePacotes : BackgroundService
             var servico = escopo.ServiceProvider
                 .GetRequiredService<RecorrenciaDePacotesService>();
             var relogio = escopo.ServiceProvider.GetRequiredService<RelogioDoTenant>();
+            var fila = escopo.ServiceProvider.GetRequiredService<ListaDeEsperaService>();
 
             contexto.IgnorarFiltroDeTenant = true;
             var tenants = await db.Tenants.AsNoTracking()
@@ -93,6 +94,17 @@ public class JobDiarioDePacotes : BackgroundService
                     // "Hoje" é o de cada empresa: o relógio segue o tenant que o contexto
                     // acabou de assumir, e cada uma vira o ciclo no próprio calendário.
                     var r = await servico.VarrerAsync(relogio.Hoje(), ct);
+
+                    // A fila de espera também vira o dia: quem esperava por uma data que já
+                    // passou deixa de estar "na fila" — e de ser oferecido na próxima vaga.
+                    // Ninguém chamava isto, e a espera de ontem continuava com o "Avisar".
+                    var expiradas = await fila.ExpirarVencidasAsync(relogio.Hoje(), ct);
+                    if (expiradas > 0)
+                    {
+                        _log.LogInformation(
+                            "Lista de espera {Slug}: {Expiradas} espera(s) vencida(s).",
+                            tenant.Slug, expiradas);
+                    }
 
                     if (r.Avisos.Count > 0 || r.CiclosEncerrados > 0)
                     {

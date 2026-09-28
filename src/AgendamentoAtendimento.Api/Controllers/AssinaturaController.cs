@@ -92,6 +92,19 @@ public class AssinaturaController : ControllerBaseApi
     [RequerPermissao("assinatura.ver")]
     public async Task<ActionResult<CotacaoDto>> Cotar(CotacaoRequest req, CancellationToken ct)
     {
+        var plano = NaoNulo(
+            await _db.Planos.AsNoTracking().FirstOrDefaultAsync(p => p.Id == req.PlanoId, ct),
+            "Plano não encontrado.");
+
+        // A cotação é a promessa do checkout: cotar 40 assentos num plano que aceita 25
+        // mostrava um preço que o checkout depois recusava.
+        if (!plano.Suporta(req.Assentos))
+        {
+            throw new RegraDeNegocioException(
+                $"O plano {plano.Nome} aceita no máximo {plano.LimiteUsuarios} usuários.",
+                "ACIMA_DO_LIMITE");
+        }
+
         var detalhe = await _assinaturas.CotarAsync(req.PlanoId, req.Ciclo, req.Assentos, ct)
             ?? throw new NaoEncontradoException("Plano não encontrado.");
 

@@ -18,8 +18,13 @@ namespace AgendamentoAtendimento.Api.Controllers;
 public class PerfisController : ControllerBaseApi
 {
     private readonly AppDbContext _db;
+    private readonly CacheDeAcesso? _acessos;
 
-    public PerfisController(AppDbContext db) => _db = db;
+    public PerfisController(AppDbContext db, CacheDeAcesso? acessos = null)
+    {
+        _db = db;
+        _acessos = acessos;
+    }
 
     /// <summary>
     /// Catálogo de telas e ações. O app monta a tela de permissões a partir desta resposta —
@@ -96,6 +101,8 @@ public class PerfisController : ControllerBaseApi
         }
 
         await _db.SaveChangesAsync(ct);
+        // Quem usa o perfil passa a valer com as permissões novas já na próxima requisição.
+        _acessos?.InvalidarEmpresa(TenantId);
         return Ok(perfil.ParaDto());
     }
 

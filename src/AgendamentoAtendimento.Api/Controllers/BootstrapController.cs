@@ -80,6 +80,14 @@ public class BootstrapController : ControllerBaseApi
                 .OrderBy(f => f.Nome).ToListAsync(ct)
             : new List<FormaPagamento>();
 
+        var vendedores = Permissoes.Permite(permissoes, "vendas.criar") || Permissoes.Permite(permissoes, "vendas.editar")
+            ? await _db.Usuarios.AsNoTracking()
+                .Where(u => u.Ativo && !u.ConvitePendente)
+                .OrderBy(u => u.Nome)
+                .Select(u => new PessoaResumoDto(u.Id, u.Nome))
+                .ToListAsync(ct)
+            : new List<PessoaResumoDto>();
+
         var horarios = podeVerHorarios
             ? await _db.HorariosFuncionamento.AsNoTracking()
                 .OrderBy(h => h.DiaDaSemana).ToListAsync(ct)
@@ -100,7 +108,8 @@ public class BootstrapController : ControllerBaseApi
             Time: time.Select(u => u.ParaDto()).ToList(),
             FormasPagamento: formas.Select(f => f.ParaDto()).ToList(),
             HorarioFuncionamento: horarios.Select(h => h.ParaDto()).ToList(),
-            Opcoes: MontarOpcoes()));
+            Opcoes: MontarOpcoes(),
+            Vendedores: vendedores));
     }
 
     /// <summary>
@@ -128,6 +137,7 @@ public class BootstrapController : ControllerBaseApi
                 new(nameof(StatusAgendamento.Concluido), "Concluído"),
                 new(nameof(StatusAgendamento.Cancelado), "Cancelado"),
                 new(nameof(StatusAgendamento.NaoCompareceu), "Não compareceu"),
+                new(nameof(StatusAgendamento.PendenteAprovacao), "Aguardando aprovação"),
             },
             ["statusVenda"] = new List<OpcaoDto>
             {
@@ -136,6 +146,31 @@ public class BootstrapController : ControllerBaseApi
                 new(nameof(StatusVenda.Paga), "Paga"),
                 new(nameof(StatusVenda.Cancelada), "Cancelada"),
                 new(nameof(StatusVenda.Estornada), "Estornada"),
+            },
+            // Os três grupos do caixa: sem eles a tela mostrava "TerminalPresente", "PixQr" e
+            // "EmAndamento" crus.
+            ["statusPagamento"] = new List<OpcaoDto>
+            {
+                new(nameof(StatusPagamento.Pendente), "Pendente"),
+                new(nameof(StatusPagamento.Confirmado), "Confirmado"),
+                new(nameof(StatusPagamento.Recusado), "Recusado"),
+                new(nameof(StatusPagamento.Estornado), "Estornado"),
+            },
+            ["meioDeCaptura"] = new List<OpcaoDto>
+            {
+                new(nameof(MeioDeCaptura.Manual), "Manual"),
+                new(nameof(MeioDeCaptura.TerminalPresente), "Maquininha"),
+                new(nameof(MeioDeCaptura.PixQr), "Pix com QR"),
+                new(nameof(MeioDeCaptura.GatewayOnline), "Gateway online"),
+            },
+            ["statusCobranca"] = new List<OpcaoDto>
+            {
+                new(nameof(StatusCobranca.Criada), "Criada"),
+                new(nameof(StatusCobranca.EmAndamento), "Em andamento"),
+                new(nameof(StatusCobranca.Aprovada), "Aprovada"),
+                new(nameof(StatusCobranca.Recusada), "Recusada"),
+                new(nameof(StatusCobranca.Cancelada), "Cancelada"),
+                new(nameof(StatusCobranca.Expirada), "Expirada"),
             },
             ["cicloCobranca"] = new List<OpcaoDto>
             {

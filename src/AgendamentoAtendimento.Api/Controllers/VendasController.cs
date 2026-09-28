@@ -1,8 +1,8 @@
 using AgendamentoAtendimento.Api.Autenticacao;
 using AgendamentoAtendimento.Api.Comum;
 using AgendamentoAtendimento.Api.Contratos;
-using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Agenda;
+using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Servicos;
@@ -19,6 +19,9 @@ namespace AgendamentoAtendimento.Api.Controllers;
 [Route("api/vendas")]
 public class VendasController : ControllerBaseApi
 {
+    /// <summary>O máximo de unidades numa linha da venda.</summary>
+    private const decimal MaximoPorLinha = 100_000m;
+
     private readonly AppDbContext _db;
     private readonly VendaService _vendas;
     private readonly RelogioDoTenant _relogio;
@@ -41,9 +44,11 @@ public class VendasController : ControllerBaseApi
         CancellationToken ct = default)
     {
         var p = pagina ?? new ParametrosDePagina();
+        // O cliente vem à parte (ComClientesAsync): incluído aqui, o filtro de exclusão
+        // lógica virava INNER JOIN e a venda de um cliente excluído sumia da lista — e da
+        // contagem não, que não passa pelo join: "76 vendas" com 17 na página.
         var consulta = _db.Vendas
             .AsNoTracking()
-            .Include(v => v.Cliente)
             .Include(v => v.Vendedor)
             // O vendedor de cada item: é o nome que o checkout mostra ao lado do serviço.
             .Include(v => v.Itens).ThenInclude(i => i.Vendedor)
@@ -76,8 +81,10 @@ public class VendasController : ControllerBaseApi
         var total = await consulta.CountAsync(ct);
         var itens = await consulta
             .OrderByDescending(v => v.CriadoEm)
+            .ThenByDescending(v => v.Id)
             .Skip(p.Pular).Take(p.TamanhoSeguro)
             .ToListAsync(ct);
+        await ComClientesAsync(itens, ct);
 
         return Ok(new PaginaDto<VendaDto>(
             itens.Select(v => v.ParaDto()).ToList(), p.PaginaSegura, p.TamanhoSeguro, total));
@@ -105,7 +112,20 @@ public class VendasController : ControllerBaseApi
             "Cliente não encontrado.");
 
         await ValidarPedidoAsync(req, ct);
+
+        // Faturar confere "este atendimento já virou venda?" e depois grava: sem trava, duas
+        // abas (ou duas pessoas) faturando o mesmo atendimento criavam duas vendas dele. A
+        // trava da agenda põe uma atrás da outra, e a segunda já enxerga a primeira.
+        await using var trava = req.AgendamentoId is null
+            ? TransacaoDaAgenda.Nenhuma
+            : await _db.TravarAgendaAsync(ct);
         var agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
+        if (agendamento is not null && agendamento.CobrancaDisponivel(null) != AcaoDeCobranca.GerarVenda)
+        {
+            throw new RegraDeNegocioException(
+                "Só um atendimento em andamento ou concluído, com serviço, vira venda.",
+                "ATENDIMENTO_NAO_ENTREGUE");
+        }
 
         var venda = new Venda
         {
@@ -127,6 +147,7 @@ public class VendasController : ControllerBaseApi
             agendamento.VendaId = venda.Id;
             await _db.SaveChangesAsync(ct);
         }
+        await trava.ConfirmarAsync(ct);
 
         var completa = await CarregarAsync(venda.Id, ct);
         return CreatedAtAction(nameof(Obter), new { id = venda.Id }, completa!.ParaDto());
@@ -136,6 +157,7 @@ public class VendasController : ControllerBaseApi
     [RequerPermissao("vendas.editar")]
     public async Task<ActionResult<VendaDto>> Atualizar(long id, VendaRequest req, CancellationToken ct)
     {
+        await using var trava = await _db.TravarVendaAsync(id, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct),
@@ -145,6 +167,16 @@ public class VendasController : ControllerBaseApi
         {
             throw new RegraDeNegocioException(
                 "Venda paga ou cancelada não pode ser alterada.", "STATUS_FINAL");
+        }
+
+        // Fechada, os itens não mudam mais: é o que a tela diz, e agora é o que a Api faz.
+        // Editar depois do fechamento baixava de novo o que já tinha saído (ou deixava de
+        // devolver no cancelamento), e um total menor que o já recebido deixava a venda
+        // presa, sem receber nem fechar.
+        if (venda.Status != StatusVenda.Aberta)
+        {
+            throw new RegraDeNegocioException(
+                "Esta venda já foi fechada: os itens não mudam mais.", "VENDA_FECHADA");
         }
 
         // O cliente vem do pedido: sem conferir, um id qualquer (inclusive de outra
@@ -159,6 +191,14 @@ public class VendasController : ControllerBaseApi
         Agendamento? agendamento;
         if (venda.AgendamentoId != req.AgendamentoId)
         {
+            // Prender um atendimento novo a esta venda é faturá-lo: a mesma trava da agenda
+            // e a mesma regra do POST. Sem elas, um PUT e um POST ao mesmo tempo faturavam o
+            // mesmo atendimento duas vezes, e um atendimento que nem começou virava venda.
+            // (A trava entra na transação da trava da venda e solta junto com ela.)
+            await using var travaDaAgenda = req.AgendamentoId is null
+                ? TransacaoDaAgenda.Nenhuma
+                : await _db.TravarAgendaAsync(ct);
+
             var anterior = await BuscarAgendamentoAsync(venda.AgendamentoId, ct);
             if (anterior is not null && anterior.VendaId == venda.Id)
             {
@@ -168,6 +208,13 @@ public class VendasController : ControllerBaseApi
             agendamento = await CarregarAgendamentoDaVendaAsync(req.AgendamentoId, ct);
             if (agendamento is not null)
             {
+                if (agendamento.CobrancaDisponivel(null) != AcaoDeCobranca.GerarVenda)
+                {
+                    throw new RegraDeNegocioException(
+                        "Só um atendimento em andamento ou concluído, com serviço, vira venda.",
+                        "ATENDIMENTO_NAO_ENTREGUE");
+                }
+
                 agendamento.VendaId = venda.Id;
             }
         }
@@ -183,10 +230,14 @@ public class VendasController : ControllerBaseApi
         // PUT troca a venda inteira: nulo aqui quer dizer "sem vendedor", e não "mantém".
         // Sem isso o checkout nunca conseguiria tirar a comissão de alguém.
         venda.VendedorId = req.VendedorId;
+        // Linha que já estava na venda continua valendo mesmo que o item tenha saído do
+        // catálogo depois: sem isto, excluir um item travava toda venda aberta que o tinha.
+        var jaNaVenda = venda.Itens.Select(i => i.ItemCatalogoId).ToHashSet();
         venda.Itens.Clear();
-        await PreencherItensAsync(venda, req, ct, agendamento);
+        await PreencherItensAsync(venda, req, ct, agendamento, jaNaVenda);
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
         var completa = await CarregarAsync(id, ct);
         return Ok(completa!.ParaDto());
     }
@@ -196,6 +247,9 @@ public class VendasController : ControllerBaseApi
     [RequerPermissao("financeiro.receber")]
     public async Task<ActionResult<VendaDto>> Receber(long id, PagamentoRequest req, CancellationToken ct)
     {
+        // Um recebimento por vez na mesma venda: dois cliques (ou duas abas) passavam os dois
+        // pela conferência do saldo e o mesmo saldo era recebido duas vezes.
+        await using var trava = await _db.TravarVendaAsync(id, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct),
@@ -206,7 +260,10 @@ public class VendasController : ControllerBaseApi
             throw new RegraDeNegocioException("Venda cancelada não recebe pagamento.", "STATUS_FINAL");
         }
 
-        if (req.Valor <= 0)
+        // O valor é gravado em centavos: conferir antes de arredondar deixava R$ 0,004
+        // passar como positivo e virar um recebimento de R$ 0,00 — que fechava a venda.
+        var valor = decimal.Round(req.Valor, 2, MidpointRounding.AwayFromZero);
+        if (valor <= 0)
         {
             throw new RegraDeNegocioException("O valor do pagamento deve ser positivo.", "VALOR_INVALIDO");
         }
@@ -216,15 +273,29 @@ public class VendasController : ControllerBaseApi
                 .FirstOrDefaultAsync(f => f.Id == req.FormaPagamentoId, ct),
             "Forma de pagamento não encontrada.");
 
+        // Com a maquininha ou o QR na mão do cliente, um recebimento manual do mesmo saldo
+        // fazia o cliente pagar duas vezes quando a cobrança fosse aprovada.
+        var agora = DateTimeOffset.UtcNow;
+        if (await _db.Cobrancas.AnyAsync(
+                c => c.VendaId == venda.Id
+                     && (c.Status == StatusCobranca.Criada || c.Status == StatusCobranca.EmAndamento)
+                     && c.ExpiraEm > agora, ct))
+        {
+            throw new RegraDeNegocioException(
+                "Esta venda tem uma cobrança em andamento. Conclua ou cancele a cobrança antes de receber de outro jeito.",
+                "VENDA_COM_COBRANCA");
+        }
+
         _vendas.RecalcularTotais(venda);
-        if (req.Valor > venda.SaldoAberto)
+        if (valor > venda.SaldoAberto)
         {
             throw new RegraDeNegocioException(
                 $"O valor excede o saldo em aberto ({venda.SaldoAberto:0.00}).", "VALOR_ACIMA_DO_SALDO");
         }
 
         await _vendas.RegistrarPagamentoAsync(
-            venda, req.FormaPagamentoId, req.Valor, req.Parcelas, req.Autorizacao, ct);
+            venda, req.FormaPagamentoId, valor, req.Parcelas, req.Autorizacao, ct);
+        await trava.ConfirmarAsync(ct);
 
         var completa = await CarregarAsync(id, ct);
         return Ok(completa!.ParaDto());
@@ -245,6 +316,7 @@ public class VendasController : ControllerBaseApi
     public async Task<ActionResult<VendaDto>> Estornar(
         long vendaId, long pagamentoId, [FromBody] EstornarPagamentoRequest? req, CancellationToken ct)
     {
+        await using var trava = await _db.TravarVendaAsync(vendaId, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == vendaId, ct),
@@ -274,6 +346,7 @@ public class VendasController : ControllerBaseApi
 
         _vendas.EstornarPagamento(venda, pagamento, req?.Motivo);
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
 
         var completa = await CarregarAsync(vendaId, ct);
         return Ok(completa!.ParaDto());
@@ -283,6 +356,7 @@ public class VendasController : ControllerBaseApi
     [RequerPermissao("vendas.finalizar")]
     public async Task<ActionResult<VendaDto>> Finalizar(long id, CancellationToken ct)
     {
+        await using var trava = await _db.TravarVendaAsync(id, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Itens).Include(v => v.Pagamentos)
                 .FirstOrDefaultAsync(v => v.Id == id, ct),
@@ -297,23 +371,12 @@ public class VendasController : ControllerBaseApi
                 "Só uma venda aberta pode ser finalizada.", "STATUS_INVALIDO");
         }
 
-        _vendas.RecalcularTotais(venda);
-        venda.Status = venda.SaldoAberto <= 0 ? StatusVenda.Paga : StatusVenda.AguardandoPagamento;
-        venda.FinalizadaEm = DateTimeOffset.UtcNow;
-
-        // Baixa de estoque só acontece no fechamento da venda.
-        foreach (var item in venda.Itens.Where(i => i.Tipo == TipoItem.Produto))
-        {
-            var produto = await _db.ItensCatalogo.FirstOrDefaultAsync(i => i.Id == item.ItemCatalogoId, ct);
-            if (produto?.Estoque is { } estoque)
-            {
-                produto.Estoque = Math.Max(0, estoque - (int)Math.Ceiling(item.Quantidade));
-            }
-        }
-        // É isto que o cancelamento consulta para devolver o estoque.
-        venda.EstoqueBaixado = true;
+        // Baixa de estoque só acontece no fechamento da venda — aqui, ou no primeiro
+        // dinheiro que chega com ela aberta. Sem estoque suficiente, recusa.
+        await _vendas.FecharAsync(venda, ct);
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
         var completa = await CarregarAsync(id, ct);
         return Ok(completa!.ParaDto());
     }
@@ -322,6 +385,7 @@ public class VendasController : ControllerBaseApi
     [RequerPermissao("vendas.cancelar")]
     public async Task<IActionResult> Cancelar(long id, CancellationToken ct)
     {
+        await using var trava = await _db.TravarVendaAsync(id, ct);
         var venda = NaoNulo(
             await _db.Vendas.Include(v => v.Pagamentos).Include(v => v.Itens)
                 .FirstOrDefaultAsync(v => v.Id == id, ct),
@@ -358,18 +422,7 @@ public class VendasController : ControllerBaseApi
 
         // A finalização baixou o estoque dos produtos; cancelar devolve o que saiu. Sem
         // isto, cada venda finalizada e cancelada sumia com o produto da prateleira.
-        if (venda.EstoqueBaixado)
-        {
-            foreach (var item in venda.Itens.Where(i => i.Tipo == TipoItem.Produto))
-            {
-                var produto = await _db.ItensCatalogo.FirstOrDefaultAsync(i => i.Id == item.ItemCatalogoId, ct);
-                if (produto?.Estoque is { } estoque)
-                {
-                    produto.Estoque = estoque + (int)Math.Ceiling(item.Quantidade);
-                }
-            }
-            venda.EstoqueBaixado = false;
-        }
+        await _vendas.DevolverEstoqueAsync(venda, ct);
 
         // O atendimento volta para a fila de cobrança. Sem soltar o vínculo, um
         // cancelamento deixaria o serviço entregue sem poder ser cobrado nunca mais:
@@ -385,6 +438,7 @@ public class VendasController : ControllerBaseApi
         }
 
         await _db.SaveChangesAsync(ct);
+        await trava.ConfirmarAsync(ct);
         return NoContent();
     }
 
@@ -466,10 +520,20 @@ public class VendasController : ControllerBaseApi
     }
 
     private async Task PreencherItensAsync(
-        Venda venda, VendaRequest req, CancellationToken ct, Agendamento? agendamento = null)
+        Venda venda, VendaRequest req, CancellationToken ct, Agendamento? agendamento = null,
+        IReadOnlySet<long>? jaNaVenda = null)
     {
         var ids = req.Itens.Select(i => i.ItemId).Distinct().ToList();
         var catalogo = await _db.ItensCatalogo.Where(i => ids.Contains(i.Id)).ToListAsync(ct);
+        if (jaNaVenda is { Count: > 0 } && catalogo.Count < ids.Count)
+        {
+            // Item excluído do catálogo depois de entrar na venda: a linha dele continua
+            // valendo (nome e preço já estavam congelados). Só a empresa da venda.
+            var faltam = ids.Where(id => jaNaVenda.Contains(id) && catalogo.All(c => c.Id != id)).ToList();
+            catalogo.AddRange(await _db.ItensCatalogo.IgnoreQueryFilters()
+                .Where(i => faltam.Contains(i.Id) && i.TenantId == TenantId)
+                .ToListAsync(ct));
+        }
 
         // Quem prestou cada serviço no atendimento, unidade a unidade. É daqui que sai a
         // comissão: pagar tudo a quem abriu a venda daria o dinheiro à pessoa errada
@@ -492,14 +556,31 @@ public class VendasController : ControllerBaseApi
             var item = catalogo.FirstOrDefault(i => i.Id == pedido.ItemId)
                 ?? throw new NaoEncontradoException($"Item {pedido.ItemId} não encontrado.");
 
-            if (pedido.Quantidade <= 0)
+            // Quantidade, preço e desconto são gravados com duas casas: calcular com a
+            // terceira e gravar sem ela fazia o total da venda discordar da soma das linhas.
+            var quantidade = decimal.Round(pedido.Quantidade, 2, MidpointRounding.AwayFromZero);
+            var preco = decimal.Round(pedido.PrecoUnitario ?? item.Preco, 2, MidpointRounding.AwayFromZero);
+            var desconto = decimal.Round(pedido.DescontoValor, 2, MidpointRounding.AwayFromZero);
+
+            // O teto é de digitação: três bilhões de unidades eram aceitos aqui e só
+            // estouravam (500) ao fechar a venda, na conta do estoque.
+            if (quantidade <= 0 || quantidade > MaximoPorLinha)
             {
                 throw new RegraDeNegocioException(
-                    $"Quantidade inválida para {item.Nome}.", "QUANTIDADE");
+                    $"Quantidade inválida para {item.Nome}: de 0,01 a 100.000 por linha.",
+                    "QUANTIDADE");
+            }
+
+            // O desconto é da linha: maior que ela, o que sobrava comia as outras linhas —
+            // um serviço com desconto acima do preço zerava a venda com o produto junto.
+            if (desconto > decimal.Round(preco * quantidade, 2, MidpointRounding.AwayFromZero))
+            {
+                throw new RegraDeNegocioException(
+                    $"O desconto de {item.Nome} é maior que o valor da linha.", "DESCONTO_INVALIDO");
             }
 
             if (item.Tipo == TipoItem.Produto && item.Estoque is { } estoque &&
-                pedido.Quantidade > estoque)
+                quantidade > estoque)
             {
                 throw new RegraDeNegocioException(
                     $"Estoque insuficiente de {item.Nome}: {estoque} disponível(is).", "ESTOQUE");
@@ -509,15 +590,15 @@ public class VendasController : ControllerBaseApi
             // se divide entre quem prestou: o mesmo serviço pode ter sido prestado por
             // duas pessoas no mesmo atendimento, e cada uma recebe pelo que fez.
             var partes = pedido.VendedorId is not null
-                ? new List<(long? Quem, decimal Quantidade)> { (pedido.VendedorId, pedido.Quantidade) }
+                ? new List<(long? Quem, decimal Quantidade)> { (pedido.VendedorId, quantidade) }
                 : VendaService.DividirEntreQuemPrestou(
                     quemPrestou.TryGetValue(item.Id, out var fila) ? fila : null,
-                    pedido.Quantidade);
+                    quantidade);
 
             // O desconto pedido é da linha inteira: dividida, ele acompanha as partes na
             // proporção das unidades, e a soma bate no centavo.
             var descontos = VendaService.DividirDesconto(
-                pedido.DescontoValor, partes.Select(p => p.Quantidade).ToList());
+                desconto, partes.Select(p => p.Quantidade).ToList());
 
             for (var indiceDaParte = 0; indiceDaParte < partes.Count; indiceDaParte++)
             {
@@ -528,7 +609,7 @@ public class VendasController : ControllerBaseApi
                     Nome = item.Nome,
                     Quantidade = partes[indiceDaParte].Quantidade,
                     // O preço do catálogo vale, salvo quando quem tem permissão manda outro.
-                    PrecoUnitario = pedido.PrecoUnitario ?? item.Preco,
+                    PrecoUnitario = preco,
                     DescontoValor = descontos[indiceDaParte],
                     TaxaPercentual = item.TaxaPercentual,
                     // Congelada aqui: mexer na comissão do catálogo amanhã não muda o que já
@@ -540,17 +621,50 @@ public class VendasController : ControllerBaseApi
             }
         }
 
-        venda.DescontoGeral = req.DescontoGeral;
+        venda.DescontoGeral = decimal.Round(req.DescontoGeral, 2, MidpointRounding.AwayFromZero);
         venda.Observacao = req.Observacao;
         _vendas.RecalcularTotais(venda);
+
+        if (venda.DescontoGeral > venda.Itens.Sum(i => i.TotalLiquido))
+        {
+            throw new RegraDeNegocioException(
+                "O desconto geral é maior que o valor dos itens.", "DESCONTO_INVALIDO");
+        }
     }
 
-    private Task<Venda?> CarregarAsync(long id, CancellationToken ct) =>
-        _db.Vendas
-            .Include(v => v.Cliente)
+    /// <summary>A venda como a Api a devolve: lida de novo, sem rastreio, com o cliente.</summary>
+    private async Task<Venda?> CarregarAsync(long id, CancellationToken ct)
+    {
+        var venda = await _db.Vendas
+            .AsNoTracking()
             .Include(v => v.Vendedor)
             // O vendedor de cada item: é o nome que o checkout mostra ao lado do serviço.
             .Include(v => v.Itens).ThenInclude(i => i.Vendedor)
             .Include(v => v.Pagamentos).ThenInclude(p => p.FormaPagamento)
             .FirstOrDefaultAsync(v => v.Id == id, ct);
+
+        if (venda is not null)
+        {
+            await ComClientesAsync(new[] { venda }, ct);
+        }
+        return venda;
+    }
+
+    /// <summary>
+    /// Põe o cliente em cada venda — inclusive o que foi excluído depois: a venda dele
+    /// continua sendo venda, com dinheiro recebido e a receber. Só os da empresa.
+    /// </summary>
+    /// <remarks>Só para vendas lidas sem rastreio: é leitura para a resposta.</remarks>
+    private async Task ComClientesAsync(IReadOnlyCollection<Venda> vendas, CancellationToken ct)
+    {
+        var ids = vendas.Select(v => v.ClienteId).Distinct().ToList();
+        var clientes = await _db.Clientes.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => ids.Contains(c.Id) && c.TenantId == TenantId)
+            .ToDictionaryAsync(c => c.Id, ct);
+
+        foreach (var venda in vendas)
+        {
+            venda.Cliente = clientes.GetValueOrDefault(venda.ClienteId);
+        }
+    }
 }

@@ -283,20 +283,20 @@ public class PaginaPublicaService
                 null);
         }
 
-        var duracao = servicos.Sum(s => s.DuracaoMinutos ?? 0);
-        var fim = inicio.AddMinutes(duracao);
         var escolhido = pagina.PermiteEscolherProfissional ? responsavelId : null;
 
-        var responsavel = escolhido
-            ?? await EscolherResponsavelAsync(inicio, duracao, itensIds, ct);
-
-        if (responsavel is null ||
-            !await _disponibilidade.EstaLivreAsync(inicio, fim, responsavel.Value, null, ct, itensIds))
+        // Cada serviço com quem o presta — a mesma conta da grade que o cliente viu. Uma
+        // pessoa só para tudo recusava sempre o combo em que um serviço é da Bruna e o
+        // outro do Caio, que a própria página tinha oferecido.
+        var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
+            inicio, itensIds, escolhido, null, 0, ct);
+        if (atribuicoes is not { Count: > 0 })
         {
             return (new ResultadoPublico(false, RecusaPublica.HorarioIndisponivel,
                 "Esse horário acabou de ser ocupado. Escolha outro."), null);
         }
 
+        var fim = atribuicoes.Max(a => a.Fim);
         var cliente = await GarantirClienteAsync(nome, emailNormalizado, telefone, ct);
 
         var agendamento = new Agendamento
@@ -308,8 +308,8 @@ public class PaginaPublicaService
             Status = pagina.ExigeAprovacao
                 ? StatusAgendamento.PendenteAprovacao
                 : StatusAgendamento.Agendado,
-            ResponsavelId = responsavel,
-            Observacoes = observacoes,
+            ResponsavelId = atribuicoes[0].ResponsavelId,
+            Observacoes = ComTelefoneDoPedido(observacoes, telefone, cliente),
             Origem = OrigemAgendamento.Online,
             CodigoPublico = CodigoDeAcesso.Gerar(),
         };
@@ -326,8 +326,8 @@ public class PaginaPublicaService
                 Nome = servico.Nome,
                 DuracaoMinutos = servico.DuracaoMinutos ?? 0,
                 PrecoUnitario = servico.Preco,
+                ResponsavelId = atribuicoes[ordem].ResponsavelId,
                 Ordem = ordem++,
-                ResponsavelId = responsavel,
             });
         }
 
@@ -427,12 +427,22 @@ public class PaginaPublicaService
         return servicos.Count == distintos.Count ? servicos : null;
     }
 
-    private async Task<long?> EscolherResponsavelAsync(
-        DateTimeOffset inicio, int duracao, IReadOnlyCollection<long> itensIds, CancellationToken ct)
+    /// <summary>
+    /// O telefone que o cliente deu no pedido, quando é outro que o do cadastro: fica no
+    /// agendamento para o time ver, em vez de sobrescrever o cadastro — pela porta aberta,
+    /// qualquer um que soubesse o e-mail de um cliente trocava o celular dele.
+    /// </summary>
+    private static string? ComTelefoneDoPedido(string? observacoes, string? telefone, Cliente cliente)
     {
-        var data = _relogio.DataLocal(inicio);
-        var dia = await _disponibilidade.ObterDiaAsync(data, duracao, null, ct, itensIds);
-        return dia.Livres.FirstOrDefault(s => s.Inicio == inicio)?.ResponsavelId;
+        var dado = telefone?.Trim();
+        if (string.IsNullOrWhiteSpace(dado) || dado == cliente.Celular?.Trim())
+        {
+            return observacoes;
+        }
+
+        var nota = $"Telefone informado no pedido: {dado}";
+        var texto = string.IsNullOrWhiteSpace(observacoes) ? nota : $"{observacoes.Trim()}\n{nota}";
+        return texto.Length <= 1000 ? texto : observacoes;
     }
 
     private async Task<bool> EstourouLimiteAsync(
@@ -447,7 +457,7 @@ public class PaginaPublicaService
         var pedidos = await _db.Agendamentos.AsNoTracking()
             .CountAsync(a => a.Origem == OrigemAgendamento.Online
                              && a.CriadoEm >= desde
-                             && a.Cliente!.Email == email
+                             && a.Cliente!.Email!.ToLower() == email
                              && a.Status != StatusAgendamento.Cancelado, ct);
 
         return pedidos >= pagina.LimiteDiarioPorCliente;
@@ -456,11 +466,16 @@ public class PaginaPublicaService
     private async Task<Cliente> GarantirClienteAsync(
         string nome, string email, string? telefone, CancellationToken ct)
     {
-        var existente = await _db.Clientes.FirstOrDefaultAsync(c => c.Email == email, ct);
+        // O e-mail pode ter sido gravado com maiúsculas pelo time: "Ana@X.com" é a mesma
+        // pessoa que "ana@x.com", e não um cadastro novo (que ainda escaparia do limite).
+        var existente = await _db.Clientes
+            .OrderBy(c => c.Id)
+            .FirstOrDefaultAsync(c => c.Email!.ToLower() == email, ct);
         if (existente is not null)
         {
-            // Telefone novo vale: quem marcou agora deu o número mais recente.
-            if (!string.IsNullOrWhiteSpace(telefone))
+            // O cadastro não muda pela porta aberta: só ganha o telefone se não tinha
+            // nenhum. Um número diferente vai no agendamento (ComTelefoneDoPedido).
+            if (string.IsNullOrWhiteSpace(existente.Celular) && !string.IsNullOrWhiteSpace(telefone))
             {
                 existente.Celular = telefone.Trim();
             }

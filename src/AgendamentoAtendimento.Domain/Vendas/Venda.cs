@@ -55,7 +55,13 @@ public class Venda : EntidadeDeTenant
     public ICollection<VendaItem> Itens { get; set; } = new List<VendaItem>();
     public ICollection<Pagamento> Pagamentos { get; set; } = new List<Pagamento>();
 
-    public decimal SaldoAberto => Math.Max(0m, TotalLiquido - TotalPago);
+    /// <summary>
+    /// O que falta receber. Venda cancelada ou estornada não deve nada — dizer o contrário
+    /// fazia a lista mostrar "em aberto" e a tela oferecer um recebimento que a Api recusa.
+    /// </summary>
+    public decimal SaldoAberto => Status is StatusVenda.Cancelada or StatusVenda.Estornada
+        ? 0m
+        : Math.Max(0m, TotalLiquido - TotalPago);
 
     /// <summary>
     /// O que a venda gera de comissão. Só faz sentido com vendedor: comissão sem alguém

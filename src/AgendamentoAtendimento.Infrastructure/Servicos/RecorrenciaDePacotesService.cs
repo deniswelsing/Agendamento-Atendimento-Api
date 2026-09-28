@@ -24,7 +24,16 @@ public sealed record ResultadoDaVarredura(
     int CiclosAbertos,
     int PacotesEncerrados,
     int EstornosGerados,
-    decimal ValorEstornado);
+    decimal ValorEstornado)
+{
+    /// <summary>
+    /// O que vence nos próximos dias e cujo aviso deste ciclo já foi dado. O aviso sai uma
+    /// vez por ciclo — mas quem roda primeiro é o job da madrugada, que só o registra em
+    /// log: sem esta lista, "varrer vencimentos" pela tela respondia "nada vence" com um
+    /// pacote vencendo em três dias.
+    /// </summary>
+    public IReadOnlyList<AvisoDeRenovacao> JaAvisados { get; init; } = Array.Empty<AvisoDeRenovacao>();
+}
 
 /// <summary>
 /// A varredura diária dos pacotes. Faz duas coisas, nesta ordem:
@@ -63,6 +72,7 @@ public class RecorrenciaDePacotesService
             .ToListAsync(ct);
 
         var avisos = new List<AvisoDeRenovacao>();
+        var jaAvisados = new List<AvisoDeRenovacao>();
         var encerrados = 0;
         var abertos = 0;
         var pacotesEncerrados = 0;
@@ -75,11 +85,9 @@ public class RecorrenciaDePacotesService
 
             if (dias >= 0)
             {
+                var novo = pacote.AvisoDoCiclo != pacote.CicloAtual;
                 var aviso = await AvisarAsync(pacote, hoje, dias, ct);
-                if (aviso is not null)
-                {
-                    avisos.Add(aviso);
-                }
+                (novo ? avisos : jaAvisados).Add(aviso);
 
                 continue;
             }
@@ -99,7 +107,10 @@ public class RecorrenciaDePacotesService
         await _db.SaveChangesAsync(ct);
 
         return new ResultadoDaVarredura(
-            avisos, encerrados, abertos, pacotesEncerrados, estornos, valorEstornado);
+            avisos, encerrados, abertos, pacotesEncerrados, estornos, valorEstornado)
+        {
+            JaAvisados = jaAvisados,
+        };
     }
 
 
@@ -164,7 +175,7 @@ public class RecorrenciaDePacotesService
 
         // Há recorrência à frente? Só quando o pacote renova E este cliente segue nele.
         // Saindo, não há: o saldo tem de voltar como dinheiro.
-        ciclo.Encerrar(haProximoCiclo: false, pacote.ValorPorAtendimento, DateTimeOffset.UtcNow);
+        ciclo.Encerrar(haProximoCiclo: false, pacote.ValorExatoPorAtendimento, DateTimeOffset.UtcNow);
         vinculo.Ativo = false;
 
         await _db.SaveChangesAsync(ct);
@@ -175,16 +186,15 @@ public class RecorrenciaDePacotesService
     /// Avisa uma vez por ciclo. Sem essa marca, o pacote apareceria no relatório sete
     /// dias seguidos e o aviso viraria ruído — que é o mesmo que não avisar.
     /// </summary>
-    private async Task<AvisoDeRenovacao?> AvisarAsync(
+    private async Task<AvisoDeRenovacao> AvisarAsync(
         Pacote pacote, DateOnly hoje, int dias, CancellationToken ct)
     {
-        if (pacote.AvisoDoCiclo == pacote.CicloAtual)
+        // A marca é que é uma por ciclo; o texto sai sempre (para a lista de já avisados).
+        if (pacote.AvisoDoCiclo != pacote.CicloAtual)
         {
-            return null;
+            pacote.AvisadoEm = DateTimeOffset.UtcNow;
+            pacote.AvisoDoCiclo = pacote.CicloAtual;
         }
-
-        pacote.AvisadoEm = DateTimeOffset.UtcNow;
-        pacote.AvisoDoCiclo = pacote.CicloAtual;
 
         var clientes = await _db.PacoteClientes
             .CountAsync(c => c.PacoteId == pacote.Id && c.Ativo, ct);
@@ -239,7 +249,7 @@ public class RecorrenciaDePacotesService
                      && a.PacoteCiclo == ciclo.Ciclo
                      && a.Status == StatusAgendamento.Concluido, ct);
 
-            ciclo.Encerrar(pacote.EhRecorrente, pacote.ValorPorAtendimento, agora);
+            ciclo.Encerrar(pacote.EhRecorrente, pacote.ValorExatoPorAtendimento, agora);
             fechados++;
 
             if (ciclo.EstornoQuantidade > 0)

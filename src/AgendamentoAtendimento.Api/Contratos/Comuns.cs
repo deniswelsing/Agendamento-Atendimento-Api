@@ -176,7 +176,11 @@ public sealed record PessoaResumoDto(long UsuarioId, string Nome);
 
 public sealed record AtribuicaoDto(
     long ItemId, string Nome, DateTimeOffset Inicio, DateTimeOffset Fim,
-    long ResponsavelId, string ResponsavelNome,
+    /// <summary>
+    /// Quem presta. Não vem na página pública quando a empresa não deixa o cliente escolher
+    /// o profissional: ali o time é dado interno.
+    /// </summary>
+    long? ResponsavelId, string? ResponsavelNome,
     /// <summary>
     /// Quem mais poderia prestar este serviço neste horário. Um só quer dizer que não
     /// há escolha a fazer — a tela marca e segue.
@@ -189,7 +193,9 @@ public sealed record AtribuicaoDto(
     int VagasRestantes = 0);
 
 public sealed record SlotDto(
-    DateTimeOffset Inicio, DateTimeOffset Fim, long ResponsavelId, string ResponsavelNome,
+    DateTimeOffset Inicio, DateTimeOffset Fim,
+    /// <summary>Quem atende. Some na página pública sem escolha de profissional.</summary>
+    long? ResponsavelId, string? ResponsavelNome,
     /// <summary>Um por serviço, na ordem em que foram pedidos.</summary>
     IReadOnlyList<AtribuicaoDto> Atribuicoes);
 
@@ -581,7 +587,14 @@ public sealed record BootstrapDto(
     IReadOnlyList<MembroTimeDto> Time,
     IReadOnlyList<FormaPagamentoDto> FormasPagamento,
     IReadOnlyList<HorarioFuncionamentoDto> HorarioFuncionamento,
-    IReadOnlyDictionary<string, IReadOnlyList<OpcaoDto>> Opcoes);
+    IReadOnlyDictionary<string, IReadOnlyList<OpcaoDto>> Opcoes,
+    /// <summary>
+    /// Quem pode levar a comissão de uma venda: as pessoas ativas do time, só nome e id.
+    /// Vai para quem vende (`vendas.criar` ou `vendas.editar`) — o `Time` completo continua
+    /// só com `time.ver`, e sem esta lista a recepção e o financeiro viam o seletor de
+    /// vendedor vazio.
+    /// </summary>
+    IReadOnlyList<PessoaResumoDto>? Vendedores = null);
 
 // --------------------------------------------------------------------- pacotes
 public sealed record PacoteModeloDto(
@@ -649,4 +662,6 @@ public sealed record AvisoDeRenovacaoDto(
 public sealed record VarreduraDePacotesDto(
     DateOnly Data, IReadOnlyList<AvisoDeRenovacaoDto> Avisos, int CiclosEncerrados,
     int CiclosAbertos, int PacotesEncerrados, int EstornosGerados, decimal ValorEstornado,
-    string Resumo);
+    string Resumo,
+    /// <summary>O que vence nos próximos dias e já foi avisado neste ciclo.</summary>
+    IReadOnlyList<AvisoDeRenovacaoDto>? JaAvisados = null);

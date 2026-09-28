@@ -1,4 +1,5 @@
 using AgendamentoAtendimento.Domain.Agenda;
+using AgendamentoAtendimento.Domain.Catalogo;
 using AgendamentoAtendimento.Domain.Vendas;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
@@ -197,7 +198,10 @@ public class VendaService
         ArgumentNullException.ThrowIfNull(venda);
 
         venda.TotalBruto = Arredondar(venda.Itens.Sum(i => i.TotalBruto));
-        var descontoItens = Arredondar(venda.Itens.Sum(i => i.DescontoValor));
+        // O desconto que valeu em cada linha, e não o pedido: o líquido da linha para em
+        // zero, e somar o desconto bruto deixava o que passou de uma linha comer as outras
+        // — um serviço com desconto maior que ele zerava a venda inteira, produto junto.
+        var descontoItens = Arredondar(venda.Itens.Sum(i => Math.Min(i.DescontoValor, i.TotalBruto)));
         venda.TotalDescontos = Arredondar(descontoItens + venda.DescontoGeral);
         venda.TotalLiquido = Arredondar(Math.Max(0m, venda.TotalBruto - venda.TotalDescontos));
         venda.TotalImpostos = Arredondar(venda.Itens.Sum(i => i.TotalLiquido * i.TaxaPercentual / 100m));
@@ -225,15 +229,163 @@ public class VendaService
 
         var forma = await _db.FormasPagamento.FirstOrDefaultAsync(f => f.Id == formaPagamentoId, ct)
             ?? throw new InvalidOperationException("Forma de pagamento não encontrada.");
+        ValidarFormaEParcelas(forma, parcelas);
 
         var pagamento = MontarPagamento(venda, forma, valor, parcelas, MeioDeCaptura.Manual);
         pagamento.Autorizacao = autorizacao;
 
         venda.Pagamentos.Add(pagamento);
+        // Dinheiro entrando numa venda aberta fecha a venda — com a baixa do estoque. Antes o
+        // recebimento só trocava o status: a venda saía de "aberta" sem passar pelo
+        // fechamento, e o estoque dos produtos nunca baixava.
+        if (venda.Status == StatusVenda.Aberta)
+        {
+            await FecharAsync(venda, ct);
+        }
         AtualizarStatus(venda);
 
         await _db.SaveChangesAsync(ct);
         return pagamento;
+    }
+
+    /// <summary>
+    /// A forma aceita este recebimento? Desativada não recebe mais nada, e as parcelas vão
+    /// de 1 ao máximo dela (1 quando ela não parcela). Zero ou menos é tratado como à vista,
+    /// como sempre foi.
+    /// </summary>
+    public static void ValidarFormaEParcelas(FormaPagamento forma, int parcelas)
+    {
+        ArgumentNullException.ThrowIfNull(forma);
+
+        if (!forma.Ativa)
+        {
+            throw new RecusaDeNegocioException(
+                $"A forma de pagamento {forma.Nome} está desativada.", "FORMA_INATIVA");
+        }
+
+        var maximo = forma.PermiteParcelamento ? Math.Max(1, forma.MaximoParcelas) : 1;
+        if (parcelas > maximo)
+        {
+            throw new RecusaDeNegocioException(
+                maximo == 1
+                    ? $"{forma.Nome} não aceita parcelamento."
+                    : $"{forma.Nome} aceita no máximo {maximo} parcelas.",
+                "PARCELAS_INVALIDAS");
+        }
+    }
+
+    /// <summary>
+    /// Fecha a venda: os itens param de mudar, o estoque dos produtos sai da prateleira e o
+    /// status passa a seguir o que já foi pago.
+    ///
+    /// É o mesmo passo quer alguém clique em "Fechar venda", quer o primeiro dinheiro chegue
+    /// com a venda ainda aberta (recebimento ou cobrança): em todos, depois disto a venda
+    /// está fechada e o estoque, baixado — uma vez só.
+    /// </summary>
+    /// <param name="exigirEstoque">
+    /// Falso só onde o dinheiro já foi capturado (a cobrança aprovada de uma venda que
+    /// ficou aberta): recusar ali perderia de vista um pagamento de verdade, então baixa o
+    /// que houver.
+    /// </param>
+    public async Task FecharAsync(Venda venda, CancellationToken ct = default, bool exigirEstoque = true)
+    {
+        ArgumentNullException.ThrowIfNull(venda);
+        if (venda.Status != StatusVenda.Aberta)
+        {
+            throw new RecusaDeNegocioException("Só uma venda aberta pode ser fechada.", "STATUS_INVALIDO");
+        }
+
+        await BaixarEstoqueAsync(venda, exigirEstoque, ct);
+        venda.FinalizadaEm = DateTimeOffset.UtcNow;
+        venda.Status = StatusVenda.AguardandoPagamento;
+        AtualizarStatus(venda);
+    }
+
+    /// <summary>
+    /// Tira da prateleira os produtos da venda. Sem estoque suficiente, recusa: vender o que
+    /// não existe deixava o estoque em zero e, no cancelamento, devolvia mais do que tinha
+    /// saído.
+    /// </summary>
+    private async Task BaixarEstoqueAsync(Venda venda, bool exigirEstoque, CancellationToken ct)
+    {
+        if (venda.EstoqueBaixado)
+        {
+            return;
+        }
+
+        var porProduto = QuantidadesPorProduto(venda);
+        if (porProduto.Count > 0)
+        {
+            var produtos = await ProdutosTravadosAsync(porProduto.Keys, ct);
+            foreach (var produto in produtos.Where(p => p.Estoque is not null))
+            {
+                var sai = porProduto[produto.Id];
+                if (produto.Estoque < sai && exigirEstoque)
+                {
+                    throw new RecusaDeNegocioException(
+                        $"Estoque insuficiente de {produto.Nome}: {produto.Estoque} disponível(is).",
+                        "ESTOQUE");
+                }
+
+                produto.Estoque = Math.Max(0, produto.Estoque!.Value - sai);
+            }
+        }
+
+        // É isto que o cancelamento consulta para devolver o estoque.
+        venda.EstoqueBaixado = true;
+    }
+
+    /// <summary>Devolve à prateleira o que o fechamento tirou. Uma vez só.</summary>
+    public async Task DevolverEstoqueAsync(Venda venda, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(venda);
+        if (!venda.EstoqueBaixado)
+        {
+            return;
+        }
+
+        var porProduto = QuantidadesPorProduto(venda);
+        if (porProduto.Count > 0)
+        {
+            foreach (var produto in await ProdutosTravadosAsync(porProduto.Keys, ct))
+            {
+                if (produto.Estoque is { } estoque)
+                {
+                    produto.Estoque = (int)Math.Min(int.MaxValue, (long)estoque + porProduto[produto.Id]);
+                }
+            }
+        }
+
+        venda.EstoqueBaixado = false;
+    }
+
+    /// <summary>
+    /// Unidades inteiras por produto: meia unidade tira uma da prateleira. A soma é em
+    /// `long` e para no teto de `int`: somar em `int` estourava (500) com quantidade absurda.
+    /// </summary>
+    private static Dictionary<long, int> QuantidadesPorProduto(Venda venda) =>
+        venda.Itens
+            .Where(i => i.Tipo == TipoItem.Produto)
+            .GroupBy(i => i.ItemCatalogoId)
+            .ToDictionary(
+                g => g.Key,
+                g => (int)Math.Min(int.MaxValue, g.Sum(i => (long)Math.Ceiling(i.Quantidade))));
+
+    /// <summary>
+    /// Os produtos, com a linha travada até o fim da transação: duas vendas diferentes
+    /// fechando ao mesmo tempo liam o mesmo estoque e uma baixa apagava a outra.
+    /// </summary>
+    private async Task<List<ItemCatalogo>> ProdutosTravadosAsync(
+        IEnumerable<long> ids, CancellationToken ct)
+    {
+        var lista = ids.ToArray();
+        if (_db.Database.IsNpgsql() && _db.Database.CurrentTransaction is not null)
+        {
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM itens_catalogo WHERE id = ANY({lista}) FOR UPDATE", ct);
+        }
+
+        return await _db.ItensCatalogo.Where(i => lista.Contains(i.Id)).ToListAsync(ct);
     }
 
     /// <summary>
@@ -305,9 +457,13 @@ public class VendaService
     public void ConciliarTaxa(Pagamento pagamento, decimal taxaReal)
     {
         ArgumentNullException.ThrowIfNull(pagamento);
-        if (taxaReal < 0m)
+        // Taxa negativa aumentaria o líquido; maior que o valor, o deixaria negativo. As duas
+        // são erro de digitação, não taxa.
+        if (taxaReal < 0m || taxaReal > pagamento.Valor)
         {
-            throw new ArgumentOutOfRangeException(nameof(taxaReal), "A taxa não pode ser negativa.");
+            throw new RecusaDeNegocioException(
+                $"A taxa precisa ficar entre 0 e o valor recebido ({pagamento.Valor:0.00}).",
+                "TAXA_INVALIDA");
         }
 
         pagamento.ValorTaxa = Arredondar(taxaReal);
@@ -316,19 +472,25 @@ public class VendaService
         pagamento.ConciliadoEm = DateTimeOffset.UtcNow;
     }
 
-    /// <summary>Ajusta o status da venda a partir do que já foi pago.</summary>
+    /// <summary>
+    /// Ajusta o status de uma venda FECHADA a partir do que já foi pago. A aberta continua
+    /// aberta (quem a fecha é <see cref="FecharAsync"/>, com a baixa do estoque) e a
+    /// cancelada ou estornada não volta à vida por um recálculo.
+    /// </summary>
     public void AtualizarStatus(Venda venda)
     {
         ArgumentNullException.ThrowIfNull(venda);
 
         RecalcularTotais(venda);
-        venda.Status = venda.TotalPago >= venda.TotalLiquido && venda.TotalLiquido > 0
-            ? StatusVenda.Paga
-            : StatusVenda.AguardandoPagamento;
+        if (venda.Status is not (StatusVenda.AguardandoPagamento or StatusVenda.Paga))
+        {
+            return;
+        }
 
+        venda.Status = venda.SaldoAberto <= 0 ? StatusVenda.Paga : StatusVenda.AguardandoPagamento;
         if (venda.Status == StatusVenda.Paga)
         {
-            venda.FinalizadaEm = DateTimeOffset.UtcNow;
+            venda.FinalizadaEm ??= DateTimeOffset.UtcNow;
         }
     }
 

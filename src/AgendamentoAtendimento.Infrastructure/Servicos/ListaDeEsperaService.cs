@@ -146,6 +146,46 @@ public class ListaDeEsperaService
     }
 
     /// <summary>
+    /// O cliente foi marcado: a espera dele pelo mesmo serviço — para aquele dia, ou para
+    /// qualquer dia — virou agendamento.
+    ///
+    /// Sem isto a entrada ficava "avisada" para sempre: o próximo cancelamento oferecia a
+    /// vaga de novo a quem já estava marcado, e "virou agendamento" nunca aparecia no
+    /// filtro. Vale para todo caminho que marca — a agenda, o pacote, a página pública.
+    /// </summary>
+    /// <returns>Quantas esperas viraram agendamento.</returns>
+    public async Task<int> ConverterPorAgendamentoAsync(Agendamento agendamento, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(agendamento);
+
+        var servicos = agendamento.Itens.Select(i => i.ItemCatalogoId).Distinct().ToList();
+        if (servicos.Count == 0)
+        {
+            return 0;
+        }
+
+        var dia = _relogio.DataLocal(agendamento.Inicio);
+        var esperas = await _db.ListaDeEspera
+            .Where(e => e.ClienteId == agendamento.ClienteId
+                        && servicos.Contains(e.ItemCatalogoId)
+                        && (e.DataDesejada == null || e.DataDesejada == dia)
+                        && (e.Status == StatusNaEspera.Aguardando || e.Status == StatusNaEspera.Avisado))
+            .ToListAsync(ct);
+
+        foreach (var entrada in esperas)
+        {
+            entrada.Status = StatusNaEspera.Convertido;
+            entrada.AgendamentoId = agendamento.Id;
+        }
+
+        if (esperas.Count > 0)
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        return esperas.Count;
+    }
+
+    /// <summary>
     /// Fecha as esperas cuja data já passou. Expirado não some da tabela: é o que mostra
     /// demanda que a empresa não conseguiu atender, e apagar isso apagaria o motivo de a
     /// fila existir.

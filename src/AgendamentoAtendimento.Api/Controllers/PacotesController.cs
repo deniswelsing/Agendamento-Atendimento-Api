@@ -26,19 +26,25 @@ public class PacotesController : ControllerBaseApi
     private readonly RecorrenciaDePacotesService _recorrencia;
     private readonly DisponibilidadeService _disponibilidade;
     private readonly RelogioDoTenant _relogio;
+    private readonly LembreteService? _lembretes;
+    private readonly ListaDeEsperaService? _fila;
 
     public PacotesController(
         AppDbContext db,
         PacoteAgendaService agenda,
         RecorrenciaDePacotesService recorrencia,
         DisponibilidadeService disponibilidade,
-        RelogioDoTenant relogio)
+        RelogioDoTenant relogio,
+        LembreteService? lembretes = null,
+        ListaDeEsperaService? fila = null)
     {
         _db = db;
         _agenda = agenda;
         _recorrencia = recorrencia;
         _disponibilidade = disponibilidade;
         _relogio = relogio;
+        _lembretes = lembretes;
+        _fila = fila;
     }
 
     /// <summary>Hoje no calendário da empresa — é nele que os ciclos começam e vencem.</summary>
@@ -161,6 +167,20 @@ public class PacotesController : ControllerBaseApi
         {
             throw new RegraDeNegocioException(
                 "O pacote precisa de ao menos um atendimento.", "PACOTE_SEM_QUANTIDADE");
+        }
+
+        // O modelo já conferia; o pacote montado na hora não: preço negativo virava estorno
+        // negativo — a empresa "devolvendo" dinheiro que o cliente teria de pagar.
+        if (preco < 0)
+        {
+            throw new RegraDeNegocioException("O preço não pode ser negativo.", "PRECO_INVALIDO");
+        }
+
+        if (quantidade > MaximoDeAtendimentos)
+        {
+            throw new RegraDeNegocioException(
+                $"Um pacote tem no máximo {MaximoDeAtendimentos} atendimentos por ciclo.",
+                "PACOTE_GRANDE_DEMAIS");
         }
 
         if (itensIds.Count == 0)
@@ -350,6 +370,15 @@ public class PacotesController : ControllerBaseApi
         var servicos = await _db.ItensCatalogo.AsNoTracking()
             .Where(i => itens.Contains(i.Id)).ToListAsync(ct);
 
+        // Serviço excluído do catálogo depois de entrar no pacote sai da sessão: a grade já
+        // o pulava e achava encaixe para os outros, e montar a sessão com ele dava 500.
+        itens = itens.Where(id => servicos.Any(s => s.Id == id)).ToList();
+        if (itens.Count == 0)
+        {
+            throw new RegraDeNegocioException(
+                "Os serviços deste pacote não estão mais no catálogo.", "SERVICO_INVALIDO");
+        }
+
         // Serviço sem duração no catálogo não bloqueia o pacote: meia hora é o padrão
         // da grade, e é melhor marcar com ela do que não marcar.
         var duracao = servicos.Sum(s => s.DuracaoMinutos ?? 0);
@@ -359,7 +388,28 @@ public class PacotesController : ControllerBaseApi
         }
         var fim = inicio.AddMinutes(duracao);
 
-        var responsavel = req.ResponsavelId ?? vinculo.ResponsavelPreferidoId;
+        // Primeiro a mesma conta da grade que montou a proposta: cada serviço com quem o
+        // presta. Um pacote com um serviço da Bruna e outro do Caio era proposto (a grade
+        // divide) e sempre recusado aqui, que procurava uma pessoa só para tudo. A pessoa
+        // pedida (ou a preferida do cliente) fica com o primeiro serviço — é ela que a
+        // proposta mostra.
+        var preferido = req.ResponsavelId ?? vinculo.ResponsavelPreferidoId;
+        var atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(inicio, itens, preferido, null, 0, ct);
+        if (atribuicoes is null && preferido is not null && itens.Count > 1)
+        {
+            var escolhas = itens.Select((_, i) => i == 0 ? preferido : null).ToList();
+            atribuicoes = await _disponibilidade.MontarAtribuicoesAsync(
+                inicio, itens, null, null, 0, ct, null, escolhas);
+        }
+
+        if (atribuicoes is { Count: > 0 })
+        {
+            return await GravarSessaoAsync(vinculo, pacote, ciclo, inicio, itens, servicos, atribuicoes, trava, ct);
+        }
+
+        // Fora da grade (um horário quebrado combinado com o cliente), vale a regra de
+        // sempre: uma pessoa que presta tudo e está livre em cada janela.
+        var responsavel = preferido;
         if (responsavel is null)
         {
             var livres = await _disponibilidade.QuemPodePrestarAsync(
@@ -420,9 +470,57 @@ public class PacotesController : ControllerBaseApi
             });
         }
 
+        return await ConcluirSessaoAsync(agendamento, trava, ct);
+    }
+
+    /// <summary>A sessão com cada serviço na pessoa que a grade atribuiu.</summary>
+    private async Task<ActionResult<AgendamentoDto>> GravarSessaoAsync(
+        PacoteCliente vinculo, Pacote pacote, CicloDoCliente ciclo, DateTimeOffset inicio,
+        IReadOnlyList<long> itens, IReadOnlyList<ItemCatalogo> servicos,
+        IReadOnlyList<AtribuicaoDeServico> atribuicoes, TransacaoDaAgenda trava, CancellationToken ct)
+    {
+        var agendamento = new Agendamento
+        {
+            ClienteId = vinculo.ClienteId, Inicio = inicio, Fim = atribuicoes.Max(a => a.Fim),
+            Status = StatusAgendamento.Agendado, ResponsavelId = atribuicoes[0].ResponsavelId,
+            PacoteClienteId = vinculo.Id, PacoteCiclo = ciclo.Ciclo,
+            Observacoes = $"Pacote: {pacote.Nome}",
+        };
+
+        for (var ordem = 0; ordem < itens.Count; ordem++)
+        {
+            var servico = servicos.First(s => s.Id == itens[ordem]);
+            agendamento.Itens.Add(new AgendamentoItem
+            {
+                ItemCatalogoId = servico.Id, Nome = servico.Nome,
+                DuracaoMinutos = servico.DuracaoMinutos ?? 30, Quantidade = 1,
+                // Pré-pago: o preço já foi cobrado no pacote. Repetir aqui somaria a
+                // mesma sessão duas vezes no faturamento.
+                PrecoUnitario = 0m,
+                Ordem = ordem, ResponsavelId = atribuicoes[ordem].ResponsavelId,
+            });
+        }
+
+        return await ConcluirSessaoAsync(agendamento, trava, ct);
+    }
+
+    private async Task<ActionResult<AgendamentoDto>> ConcluirSessaoAsync(
+        Agendamento agendamento, TransacaoDaAgenda trava, CancellationToken ct)
+    {
         _db.Agendamentos.Add(agendamento);
         await _db.SaveChangesAsync(ct);
         await trava.ConfirmarAsync(ct);
+
+        // A sessão de pacote é um atendimento como qualquer outro: o cliente é avisado e,
+        // se esperava na fila por este serviço, sai dela. Só a agenda fazia isso.
+        if (_lembretes is not null)
+        {
+            await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+        }
+        if (_fila is not null)
+        {
+            await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
+        }
 
         var completo = await _db.Agendamentos.AsNoTracking()
             .Include(a => a.Cliente).Include(a => a.Responsavel)
@@ -450,7 +548,7 @@ public class PacotesController : ControllerBaseApi
             return NoContent();
         }
 
-        return Ok(Montar(ciclo));
+        return Ok(Montar(ciclo, ciclo.QuantidadeUsada));
     }
 
     // ---------------------------------------------------------- varredura
@@ -463,21 +561,34 @@ public class PacotesController : ControllerBaseApi
     public async Task<ActionResult<VarreduraDePacotesDto>> Varrer(
         [FromQuery] DateOnly? data, CancellationToken ct = default)
     {
+        // Varrer "como se fosse" um dia à frente encerra ciclos antes da hora — e encerrar é
+        // definitivo: o cliente sai, o estorno é gerado. Só hoje ou um dia que já passou.
         var hoje = data ?? Hoje;
+        if (hoje > Hoje)
+        {
+            throw new RegraDeNegocioException(
+                "A varredura não roda para uma data futura: ela encerra ciclos de verdade.",
+                "DATA_FUTURA");
+        }
+
         var r = await _recorrencia.VarrerAsync(hoje, ct);
 
-        var resumo = r.Avisos.Count == 0 && r.CiclosEncerrados == 0
+        var aVencer = r.Avisos.Count + r.JaAvisados.Count;
+        var resumo = aVencer == 0 && r.CiclosEncerrados == 0
             ? "Nenhum pacote vence nos próximos 7 dias."
-            : $"{r.Avisos.Count} pacote(s) a vencer, {r.CiclosEncerrados} ciclo(s) "
-              + $"encerrado(s), {r.EstornosGerados} estorno(s).";
+            : $"{aVencer} pacote(s) a vencer"
+              + (r.JaAvisados.Count > 0 ? $" ({r.JaAvisados.Count} já avisado(s) neste ciclo)" : string.Empty)
+              + $", {r.CiclosEncerrados} ciclo(s) encerrado(s), {r.EstornosGerados} estorno(s).";
+
+        static AvisoDeRenovacaoDto ParaDto(AvisoDeRenovacao a) => new(
+            a.PacoteId, a.Nome, a.Ciclo, a.Vence, a.DiasAteVencer, a.Clientes, a.Recorrencia, a.Texto);
 
         return Ok(new VarreduraDePacotesDto(
             hoje,
-            r.Avisos.Select(a => new AvisoDeRenovacaoDto(
-                a.PacoteId, a.Nome, a.Ciclo, a.Vence, a.DiasAteVencer, a.Clientes,
-                a.Recorrencia, a.Texto)).ToList(),
+            r.Avisos.Select(ParaDto).ToList(),
             r.CiclosEncerrados, r.CiclosAbertos, r.PacotesEncerrados,
-            r.EstornosGerados, r.ValorEstornado, resumo));
+            r.EstornosGerados, r.ValorEstornado, resumo,
+            r.JaAvisados.Select(ParaDto).ToList()));
     }
 
     // ------------------------------------------------------------ apoio
@@ -498,7 +609,17 @@ public class PacotesController : ControllerBaseApi
         {
             throw new RegraDeNegocioException("O preço não pode ser negativo.", "PRECO_INVALIDO");
         }
+
+        if (req.Quantidade > MaximoDeAtendimentos)
+        {
+            throw new RegraDeNegocioException(
+                $"Um pacote tem no máximo {MaximoDeAtendimentos} atendimentos por ciclo.",
+                "PACOTE_GRANDE_DEMAIS");
+        }
     }
+
+    /// <summary>Um teto para o que se vende por ciclo: 2 bilhões de sessões é erro de digitação.</summary>
+    private const int MaximoDeAtendimentos = 1000;
 
     /// <summary>
     /// O que o pacote vai ser: do modelo quando vem de um, do pedido quando é montado
@@ -712,28 +833,43 @@ public class PacotesController : ControllerBaseApi
                 .Where(u => responsaveisIds.Contains(u.Id))
                 .ToDictionaryAsync(u => u.Id, u => u.Nome, ct);
 
-        // O ciclo aberto de cada vínculo é o de maior número entre os não encerrados.
-        var ciclos = (await _db.CiclosDePacote.AsNoTracking()
-                .Where(x => vinculosIds.Contains(x.PacoteClienteId) && !x.Encerrado)
+        // O ciclo aberto de cada vínculo é o de maior número entre os não encerrados. Quem
+        // saiu do pacote não tem ciclo aberto: mostra-se o último, que é onde está o estorno
+        // dele — antes a linha de quem saiu vinha sem ciclo, e o estorno nunca aparecia.
+        var todosOsCiclos = (await _db.CiclosDePacote.AsNoTracking()
+                .Where(x => vinculosIds.Contains(x.PacoteClienteId))
                 .ToListAsync(ct))
-            .GroupBy(x => x.PacoteClienteId)
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Ciclo).First());
+            .ToLookup(x => x.PacoteClienteId);
+        var ativos = vinculos.Where(v => v.Ativo).Select(v => v.Id).ToHashSet();
+        var ciclos = vinculos
+            .Select(v => (v.Id, Ciclo: todosOsCiclos[v.Id]
+                .Where(x => !x.Encerrado || !ativos.Contains(v.Id))
+                .OrderByDescending(x => x.Ciclo)
+                .FirstOrDefault()))
+            .Where(x => x.Ciclo is not null)
+            .ToDictionary(x => x.Id, x => x.Ciclo!);
 
         var marcados = (await _db.Agendamentos.AsNoTracking()
                 .Where(a => a.PacoteClienteId != null
                             && vinculosIds.Contains(a.PacoteClienteId.Value)
                             && a.Status != StatusAgendamento.Cancelado)
                 .GroupBy(a => new { a.PacoteClienteId, a.PacoteCiclo })
-                .Select(g => new { g.Key.PacoteClienteId, g.Key.PacoteCiclo, Quantos = g.Count() })
+                .Select(g => new
+                {
+                    g.Key.PacoteClienteId,
+                    g.Key.PacoteCiclo,
+                    Quantos = g.Count(),
+                    Atendidos = g.Count(a => a.Status == StatusAgendamento.Concluido),
+                })
                 .ToListAsync(ct))
-            .ToDictionary(x => (x.PacoteClienteId!.Value, x.PacoteCiclo), x => x.Quantos);
+            .ToDictionary(x => (x.PacoteClienteId!.Value, x.PacoteCiclo), x => (x.Quantos, x.Atendidos));
 
         return vinculos.Select(c =>
         {
             var ciclo = ciclos.GetValueOrDefault(c.Id);
-            var jaMarcados = ciclo is null
-                ? 0
-                : marcados.GetValueOrDefault((c.Id, (int?)ciclo.Ciclo), 0);
+            var (jaMarcados, atendidos) = ciclo is null
+                ? (0, 0)
+                : marcados.GetValueOrDefault((c.Id, (int?)ciclo.Ciclo), (0, 0));
 
             var preferencia = c.DiaDaSemana is { } dia
                 ? $"Toda {NomeDoDia(dia)}" + (c.Hora is { } h ? $" às {h:HH\\:mm}" : string.Empty)
@@ -745,15 +881,23 @@ public class PacotesController : ControllerBaseApi
                 c.DiaDaSemana, c.Hora, c.ResponsavelPreferidoId,
                 c.ResponsavelPreferidoId is { } rid ? responsaveis.GetValueOrDefault(rid) : null,
                 c.Ativo,
-                ciclo is null ? null : Montar(ciclo), preferencia,
-                ciclo is null ? 0 : Math.Max(0, ciclo.Total - jaMarcados));
+                ciclo is null ? null : Montar(ciclo, atendidos), preferencia,
+                ciclo is null || ciclo.Encerrado ? 0 : Math.Max(0, ciclo.Total - jaMarcados));
         }).ToList();
     }
 
-    private static CicloDoClienteDto Montar(CicloDoCliente c) => new(
-        c.Ciclo, c.Inicio, c.Fim, c.QuantidadeContratada, c.CreditoRecebido,
-        c.QuantidadeUsada, c.Total, c.Disponivel, c.Encerrado,
-        c.CreditoCedido, c.EstornoQuantidade, c.EstornoValor);
+    /// <summary>
+    /// O ciclo como a tela o mostra. Aberto, "usadas" é o que já foi atendido — o campo
+    /// gravado só é preenchido no fechamento, e a tela passava o ciclo inteiro em "0/4".
+    /// </summary>
+    private static CicloDoClienteDto Montar(CicloDoCliente c, int atendidos)
+    {
+        var usadas = c.Encerrado ? c.QuantidadeUsada : atendidos;
+        return new(
+            c.Ciclo, c.Inicio, c.Fim, c.QuantidadeContratada, c.CreditoRecebido,
+            usadas, c.Total, c.Encerrado ? c.Disponivel : Math.Max(0, c.Total - usadas), c.Encerrado,
+            c.CreditoCedido, c.EstornoQuantidade, c.EstornoValor);
+    }
 
     private static string NomeDoDia(DayOfWeek dia) => dia switch
     {

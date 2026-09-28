@@ -85,6 +85,11 @@ public class RefreshTokenConfig : IEntityTypeConfiguration<RefreshToken>
         b.Property(t => t.TokenHash).HasMaxLength(128).IsRequired();
         b.Property(t => t.ProdutoOrigem).HasMaxLength(60).IsRequired();
         b.Property(t => t.CriadoPorIp).HasMaxLength(64);
+        // A rotação grava `revogado_em` só se ele ainda estiver vazio: dois refreshes com o
+        // mesmo token ao mesmo tempo (duas abas, um retry) passavam os dois pela leitura e
+        // saíam com dois pares válidos a partir de um token só. Com o token de concorrência,
+        // o segundo UPDATE não acha a linha e a renovação dele é recusada.
+        b.Property(t => t.RevogadoEm).IsConcurrencyToken();
         b.HasIndex(t => t.TokenHash).IsUnique().HasFilter(Indices.SomenteAtivos);
         b.HasOne(t => t.Usuario).WithMany().HasForeignKey(t => t.UsuarioId)
             .OnDelete(DeleteBehavior.Cascade);
@@ -545,6 +550,7 @@ public class PacoteConfig : IEntityTypeConfiguration<Pacote>
         b.Property(p => p.Status).HasConversion<int>().IsRequired();
         b.Ignore(p => p.EhRecorrente);
         b.Ignore(p => p.ValorPorAtendimento);
+        b.Ignore(p => p.ValorExatoPorAtendimento);
         b.Ignore(p => p.Itens);
         b.Ignore(p => p.Clientes);
         b.HasOne(p => p.PacoteModelo).WithMany().HasForeignKey(p => p.PacoteModeloId)

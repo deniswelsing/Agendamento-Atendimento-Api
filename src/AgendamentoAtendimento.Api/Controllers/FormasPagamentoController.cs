@@ -83,6 +83,11 @@ public class FormasPagamentoController : ControllerBaseApi
         return Ok(forma.ParaDto());
     }
 
+    /// <summary>
+    /// Exclui a forma — ou, se ela já foi usada em recebimento, só a desativa: 204 quando
+    /// excluiu, 200 com a forma (<c>ativa: false</c>) quando desativou. Responder 204 nos dois
+    /// casos fazia a tela dizer "excluída" de uma forma que continuava na lista.
+    /// </summary>
     [HttpDelete("{id:long}")]
     [RequerPermissao("financeiro.formas")]
     public async Task<IActionResult> Remover(long id, CancellationToken ct)
@@ -91,12 +96,13 @@ public class FormasPagamentoController : ControllerBaseApi
             await _db.FormasPagamento.FirstOrDefaultAsync(f => f.Id == id, ct),
             "Forma de pagamento não encontrada.");
 
-        if (await _db.Pagamentos.AnyAsync(p => p.FormaPagamentoId == id, ct))
+        if (await _db.Pagamentos.AnyAsync(p => p.FormaPagamentoId == id, ct)
+            || await _db.Cobrancas.AnyAsync(c => c.FormaPagamentoId == id, ct))
         {
             // Já foi usada em recebimento: desativa em vez de apagar, para não furar o histórico.
             forma.Ativa = false;
             await _db.SaveChangesAsync(ct);
-            return NoContent();
+            return Ok(forma.ParaDto());
         }
 
         _db.FormasPagamento.Remove(forma);
@@ -124,6 +130,18 @@ public class FormasPagamentoController : ControllerBaseApi
         if (req.TaxaPercentual is < 0 or > 100)
         {
             throw new RegraDeNegocioException("A taxa percentual deve ficar entre 0 e 100.", "TAXA");
+        }
+
+        // Taxa fixa negativa aumentava o líquido: um recebimento de R$ 10 entrava como R$ 15.
+        if (req.TaxaFixa < 0)
+        {
+            throw new RegraDeNegocioException("A taxa fixa não pode ser negativa.", "TAXA");
+        }
+
+        if (req.PermiteParcelamento && req.MaximoParcelas is < 1 or > 48)
+        {
+            throw new RegraDeNegocioException(
+                "O máximo de parcelas deve ficar entre 1 e 48.", "PARCELAS_INVALIDAS");
         }
 
         return req.Codigo.Trim().ToUpperInvariant();

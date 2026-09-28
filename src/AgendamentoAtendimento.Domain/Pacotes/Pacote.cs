@@ -114,10 +114,18 @@ public class Pacote : EntidadeDeTenant
 
     public bool EhRecorrente => Recorrencia != RecorrenciaDePacote.Nenhuma;
 
-    /// <summary>O que uma sessão vale. É a conta do estorno e do crédito.</summary>
-    public decimal ValorPorAtendimento => QuantidadePorCliente <= 0
+    /// <summary>O que uma sessão vale, em centavos — é o número que a tela mostra.</summary>
+    public decimal ValorPorAtendimento => decimal.Round(
+        ValorExatoPorAtendimento, 2, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// O que uma sessão vale, sem arredondar. É a conta do estorno: multiplicar o valor já
+    /// arredondado devolvia R$ 99,99 de um pacote de R$ 100 em 3 sessões, e R$ 66,66 de
+    /// duas — o centavo sempre contra o cliente. Arredonda-se só o total.
+    /// </summary>
+    public decimal ValorExatoPorAtendimento => QuantidadePorCliente <= 0
         ? 0m
-        : decimal.Round(PrecoPorCliente / QuantidadePorCliente, 2, MidpointRounding.AwayFromZero);
+        : PrecoPorCliente / QuantidadePorCliente;
 
     /// <summary>Quantos dias dura um ciclo desta recorrência.</summary>
     public static int DiasDoCiclo(RecorrenciaDePacote recorrencia) => recorrencia switch

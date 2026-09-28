@@ -1,5 +1,6 @@
 using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Domain.Catalogo;
+using AgendamentoAtendimento.Domain.Clientes;
 using AgendamentoAtendimento.Domain.Usuarios;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
@@ -205,7 +206,8 @@ public class DisponibilidadeService
         IReadOnlyList<long?>? responsaveisPorItem = null,
         IReadOnlyList<int>? etapasPorItem = null,
         TimeOnly? horaDe = null,
-        TimeOnly? horaAte = null)
+        TimeOnly? horaAte = null,
+        long? clienteId = null)
     {
         var diaDaSemana = data.DayOfWeek;
 
@@ -225,8 +227,7 @@ public class DisponibilidadeService
         var fechado = excecaoEmpresa?.Fechado ?? !(horarioEmpresa?.Aberto ?? false);
         var abertura = excecaoEmpresa?.Abertura ?? horarioEmpresa?.Abertura;
         var fechamento = excecaoEmpresa?.Fechamento ?? horarioEmpresa?.Fechamento;
-        var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
-        var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
+        var (pausaInicio, pausaFim) = PausaDoDia(excecaoEmpresa, horarioEmpresa);
         var intervalo = horarioEmpresa?.IntervaloSlotMinutos ?? 30;
 
         if (fechado || abertura is null || fechamento is null)
@@ -350,7 +351,7 @@ public class DisponibilidadeService
 
         bool PodeAtender(Usuario quem, TimeOnly de, TimeOnly ate, long? itemId = null)
         {
-            var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == quem.Id);
+            var jornada = JornadaDoDia(jornadas, quem.Id, excecaoEmpresa, horarioEmpresa);
             if (jornada is null || !jornada.Trabalha)
             {
                 return false;
@@ -435,6 +436,22 @@ public class DisponibilidadeService
 
         var todosDoDia = livres.OrderBy(s => s.Inicio).ThenBy(s => s.ResponsavelNome).ToList();
 
+        // O cliente também não fica em dois lugares: escolhido ele, o horário em que ele já
+        // tem atendimento sai da grade — ela o oferecia e o gravar recusava com
+        // CLIENTE_JA_AGENDADO. É a regra da gravação: só pessoa (empresa manda gente
+        // diferente), e o que foi cancelado ou em que ele faltou não ocupa.
+        var clienteOcupouTudo = false;
+        if (clienteId is { } cliente && todosDoDia.Count > 0 && await ClienteEPessoaAsync(cliente, ct))
+        {
+            var doCliente = agendamentosDoDia
+                .Where(a => a.ClienteId == cliente && a.Status != StatusAgendamento.NaoCompareceu)
+                .ToList();
+            todosDoDia = todosDoDia
+                .Where(s => !doCliente.Any(a => s.Inicio < a.Fim && s.Fim > a.Inicio))
+                .ToList();
+            clienteOcupouTudo = todosDoDia.Count == 0;
+        }
+
         // A faixa corta no fim, e não na montagem da cadeia: é o mesmo dia, visto por
         // uma janela menor — e é o que deixa dizer "havia horário, mas não nessa faixa".
         var ordenados = todosDoDia
@@ -454,6 +471,8 @@ public class DisponibilidadeService
             // procurar outro dia quando bastava abrir a faixa.
             : soAFaixaCortou
                 ? $"Há horário neste dia, mas não entre {Faixa(horaDe, horaAte)}."
+                : clienteOcupouTudo
+                ? "O cliente já tem atendimento em todos os horários livres deste dia."
                 : escolhaImpossivel is not null
                 ? escolhaImpossivel
                 : habilitados.Any(h => h.Count == 0)
@@ -694,8 +713,8 @@ public class DisponibilidadeService
             return false;
         }
 
-        var jornada = (await JornadasAsync(diaDaSemana, ct))
-            .FirstOrDefault(j => j.UsuarioId == usuarioId);
+        var jornada = JornadaDoDia(
+            await JornadasAsync(diaDaSemana, ct), usuarioId, excecaoEmpresa, horarioEmpresa);
         if (jornada is null || !jornada.Trabalha)
         {
             return false;
@@ -709,8 +728,7 @@ public class DisponibilidadeService
             return false;
         }
 
-        var pausaInicio = excecaoEmpresa?.PausaInicio ?? horarioEmpresa?.PausaInicio;
-        var pausaFim = excecaoEmpresa?.PausaFim ?? horarioEmpresa?.PausaFim;
+        var (pausaInicio, pausaFim) = PausaDoDia(excecaoEmpresa, horarioEmpresa);
         if (ColideComPausa(de, ate, pausaInicio, pausaFim) ||
             ColideComPausa(de, ate, jornada.PausaInicioEfetiva, jornada.PausaFimEfetiva))
         {
@@ -813,7 +831,8 @@ public class DisponibilidadeService
             TimeOnly? horaDe = null,
             TimeOnly? horaAte = null,
             int diasSugeridos = 3,
-            int slotsPorDia = 3)
+            int slotsPorDia = 3,
+            long? clienteId = null)
     {
         var sugestoes = new List<(DateOnly, IReadOnlyList<SlotDisponivel>)>();
 
@@ -822,7 +841,7 @@ public class DisponibilidadeService
             var data = de.AddDays(i);
             var dia = await ObterDiaAsync(
                 data, 0, responsavelId, ct, itensIds, null, responsaveisPorItem, etapasPorItem,
-                horaDe, horaAte);
+                horaDe, horaAte, clienteId);
 
             if (dia.Livres.Count > 0)
             {
@@ -844,7 +863,8 @@ public class DisponibilidadeService
         IReadOnlyList<long?>? responsaveisPorItem = null,
         IReadOnlyList<int>? etapasPorItem = null,
         TimeOnly? horaDe = null,
-        TimeOnly? horaAte = null)
+        TimeOnly? horaAte = null,
+        long? clienteId = null)
     {
         if (ate < de)
         {
@@ -858,7 +878,7 @@ public class DisponibilidadeService
             // prometeria encaixe em dias que a tela abriria vazios.
             dias.Add(await ObterDiaAsync(
                 data, duracaoMinutos, responsavelId, ct, itensIds, null,
-                responsaveisPorItem, etapasPorItem, horaDe, horaAte));
+                responsaveisPorItem, etapasPorItem, horaDe, horaAte, clienteId));
         }
         return dias;
     }
@@ -883,6 +903,11 @@ public class DisponibilidadeService
     /// <paramref name="ignorarAgendamentoId"/> tira um agendamento da conta: é o que faz
     /// reagendar ou trocar o responsável não esbarrar no próprio compromisso.
     /// </summary>
+    /// <param name="responsaveisPorItem">
+    /// Quem foi escolhido para cada serviço, como na grade. Sem isto a conta era refeita
+    /// sem as escolhas: um atendimento com um serviço da Bruna e outro do Caio só achava
+    /// encaixe se o <paramref name="responsavelId"/> viesse nulo.
+    /// </param>
     public async Task<IReadOnlyList<AtribuicaoDeServico>?> MontarAtribuicoesAsync(
         DateTimeOffset inicio,
         IReadOnlyCollection<long>? itensIds,
@@ -890,12 +915,13 @@ public class DisponibilidadeService
         long? ignorarAgendamentoId = null,
         int duracaoMinutos = 0,
         CancellationToken ct = default,
-        IReadOnlyList<int>? etapasPorItem = null)
+        IReadOnlyList<int>? etapasPorItem = null,
+        IReadOnlyList<long?>? responsaveisPorItem = null)
     {
         var data = _relogio.DataLocal(inicio);
         var dia = await ObterDiaAsync(
             data, duracaoMinutos, responsavelId, ct, itensIds, ignorarAgendamentoId,
-            null, etapasPorItem);
+            responsaveisPorItem, etapasPorItem);
 
         if (!dia.Aberto)
         {
@@ -1076,6 +1102,63 @@ public class DisponibilidadeService
         }
 
         return contagem;
+    }
+
+    /// <summary>
+    /// A pausa da empresa no dia. A exceção que abre o dia com horário próprio traz a pausa
+    /// dela — nula é "sem pausa" —, em vez de herdar a do dia da semana: um "horário
+    /// especial das 12 às 16" herdava a pausa das 12 às 13 e só abria às 13.
+    /// </summary>
+    private static (TimeOnly? Inicio, TimeOnly? Fim) PausaDoDia(
+        ExcecaoHorarioFuncionamento? excecao, HorarioFuncionamento? padrao) =>
+        excecao is { Fechado: false, Abertura: not null, Fechamento: not null }
+            ? (excecao.PausaInicio, excecao.PausaFim)
+            : (excecao?.PausaInicio ?? padrao?.PausaInicio, excecao?.PausaFim ?? padrao?.PausaFim);
+
+    /// <summary>
+    /// A jornada de alguém neste dia. Num dia que a empresa só abre por exceção (um domingo
+    /// de mutirão), ninguém tem jornada naquele dia da semana — nem pode ter, a Api recusa
+    /// com EMPRESA_FECHADA —, e o dia aberto ficava sem horário nenhum. Nesse caso o
+    /// expediente da exceção vale para quem não tem jornada; a ausência continua sendo o
+    /// jeito de dizer quem não vem.
+    /// </summary>
+    private static HorarioStaff? JornadaDoDia(
+        IEnumerable<HorarioStaff> jornadas, long usuarioId,
+        ExcecaoHorarioFuncionamento? excecao, HorarioFuncionamento? padrao)
+    {
+        var jornada = jornadas.FirstOrDefault(j => j.UsuarioId == usuarioId);
+        if (jornada is not null || padrao?.Aberto == true
+            || excecao is not { Fechado: false, Abertura: { } abertura, Fechamento: { } fechamento })
+        {
+            return jornada;
+        }
+
+        return new HorarioStaff
+        {
+            UsuarioId = usuarioId,
+            DiaDaSemana = excecao.Data.DayOfWeek,
+            Inicio = abertura,
+            Fim = fechamento,
+            Trabalha = true,
+        };
+    }
+
+    private (long Id, bool Pessoa)? _clienteDaGrade;
+
+    /// <summary>Se o cliente é pessoa — só ela não se divide. Lido uma vez por instância.</summary>
+    private async Task<bool> ClienteEPessoaAsync(long clienteId, CancellationToken ct)
+    {
+        if (_clienteDaGrade is { } lido && lido.Id == clienteId)
+        {
+            return lido.Pessoa;
+        }
+
+        var tipo = await _db.Clientes.AsNoTracking()
+            .Where(c => c.Id == clienteId)
+            .Select(c => (TipoCliente?)c.Tipo)
+            .FirstOrDefaultAsync(ct);
+        _clienteDaGrade = (clienteId, tipo == TipoCliente.Pessoa);
+        return tipo == TipoCliente.Pessoa;
     }
 
     private async Task<List<HorarioStaff>> JornadasAsync(DayOfWeek dia, CancellationToken ct)

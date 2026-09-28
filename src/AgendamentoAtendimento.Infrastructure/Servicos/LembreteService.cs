@@ -2,6 +2,7 @@ using AgendamentoAtendimento.Domain.Agenda;
 using AgendamentoAtendimento.Infrastructure.Persistencia;
 using AgendamentoAtendimento.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace AgendamentoAtendimento.Infrastructure.Servicos;
@@ -55,12 +56,16 @@ public class LembreteService
     private readonly AppDbContext _db;
     private readonly IEnviadorDeLembrete _enviador;
     private readonly RelogioDoTenant _relogio;
+    private readonly IConfiguration? _configuracao;
 
-    public LembreteService(AppDbContext db, IEnviadorDeLembrete enviador, RelogioDoTenant relogio)
+    public LembreteService(
+        AppDbContext db, IEnviadorDeLembrete enviador, RelogioDoTenant relogio,
+        IConfiguration? configuracao = null)
     {
         _db = db;
         _enviador = enviador;
         _relogio = relogio;
+        _configuracao = configuracao;
     }
 
     /// <summary>A configuração da empresa, ou o padrão desligado quando não há nenhuma.</summary>
@@ -92,9 +97,11 @@ public class LembreteService
             return;
         }
 
-        // Cancelado ou já encerrado não tem o que lembrar.
+        // Cancelado ou já encerrado não tem o que lembrar. E o pedido que espera aprovação
+        // ainda não é compromisso: "seu atendimento está marcado" sairia antes de a empresa
+        // aceitar — os avisos nascem na aprovação.
         if (agendamento.Status is StatusAgendamento.Cancelado or StatusAgendamento.Concluido
-            or StatusAgendamento.NaoCompareceu)
+            or StatusAgendamento.NaoCompareceu or StatusAgendamento.PendenteAprovacao)
         {
             return;
         }
@@ -171,6 +178,10 @@ public class LembreteService
     public async Task<(int Enviados, int Falharam, int Expirados)> DespacharAsync(
         DateTimeOffset agora, CancellationToken ct)
     {
+        // Um despacho por empresa de cada vez: a rotina de minuto e o "Despachar a fila
+        // agora" liam os mesmos pendentes, e cada lembrete saía duas vezes.
+        await using var trava = await _db.TravarLembretesAsync(ct);
+
         var config = await ConfiguracaoAsync(ct);
 
         var vencidos = await _db.Lembretes
@@ -182,13 +193,16 @@ public class LembreteService
         var enviados = 0;
         var falharam = 0;
         var expirados = 0;
+        var paginaDeConfirmacao = vencidos.Count > 0 ? await PaginaDeConfirmacaoAsync(ct) : null;
 
         foreach (var lembrete in vencidos)
         {
             var agendamento = lembrete.Agendamento;
 
-            // O agendamento pode ter sido cancelado entre a fila e a varredura.
-            if (agendamento is null || agendamento.Status == StatusAgendamento.Cancelado)
+            // O agendamento pode ter sido cancelado (ou atendido) entre a fila e a varredura.
+            if (agendamento is null || agendamento.Status is StatusAgendamento.Cancelado
+                    or StatusAgendamento.Concluido or StatusAgendamento.NaoCompareceu
+                    or StatusAgendamento.EmAtendimento)
             {
                 lembrete.Status = StatusDeLembrete.Cancelado;
                 continue;
@@ -208,7 +222,7 @@ public class LembreteService
             lembrete.Tentativas++;
 
             var (entregue, erro) = await _enviador.EnviarAsync(
-                Montar(lembrete, agendamento, config), ct);
+                Montar(lembrete, agendamento, config, paginaDeConfirmacao), ct);
 
             if (entregue)
             {
@@ -230,6 +244,7 @@ public class LembreteService
             await _db.SaveChangesAsync(ct);
         }
 
+        await trava.ConfirmarAsync(ct);
         return (enviados, falharam, expirados);
     }
 
@@ -242,10 +257,35 @@ public class LembreteService
         agendamento.Cliente is { AceitaEmail: true, Email: { } email }
         && !string.IsNullOrWhiteSpace(email);
 
+    /// <summary>
+    /// O endereço da página pública desta empresa, onde o cliente confirma: a base do painel
+    /// (<c>PaginaPublica:BaseUrl</c>, ou <c>Web:BaseUrl</c>) mais o slug da página. Sem base
+    /// configurada não há link — um endereço relativo num e-mail não abre nada.
+    /// </summary>
+    private async Task<string?> PaginaDeConfirmacaoAsync(CancellationToken ct)
+    {
+        var baseUrl = _configuracao?["PaginaPublica:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            baseUrl = _configuracao?["Web:BaseUrl"];
+        }
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return null;
+        }
+
+        // Só a página no ar confirma: com ela desligada (ou sem página), o link caía num
+        // "Página não encontrada" — melhor o aviso sair sem link.
+        var slug = await _db.PaginasPublicas.AsNoTracking()
+            .Where(p => p.Ativa).Select(p => p.Slug).FirstOrDefaultAsync(ct);
+        return slug is null ? null : $"{baseUrl.TrimEnd('/')}/p/{Uri.EscapeDataString(slug)}";
+    }
+
     private MensagemDeLembrete Montar(
         LembreteDeAgendamento lembrete,
         Agendamento agendamento,
-        ConfiguracaoDeLembrete config)
+        ConfiguracaoDeLembrete config,
+        string? paginaDeConfirmacao = null)
     {
         // A hora que o cliente combinou é a da empresa. Escrever o instante em UTC
         // mandaria "às 11:00" para quem marcou às 08:00.
@@ -261,9 +301,12 @@ public class LembreteService
             : $"{nome}, passando para lembrar do seu atendimento em {quando}.";
 
         // Sem confirmação pedida, não há link: mandar um que ninguém vai usar só dá ao
-        // cliente um botão que não muda nada.
+        // cliente um botão que não muda nada. O link é a página pública com o código: era
+        // "/agendamento/{codigo}/confirmar", relativo e para uma rota que o painel não tem
+        // — no e-mail não abria nada, e no navegador caía no login.
         var link = config.PedirConfirmacao && agendamento.CodigoPublico is { } codigo
-            ? $"/agendamento/{codigo}/confirmar"
+                   && paginaDeConfirmacao is not null
+            ? $"{paginaDeConfirmacao}?codigo={Uri.EscapeDataString(codigo)}&confirmar=1"
             : null;
 
         if (link is not null)

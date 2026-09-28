@@ -21,10 +21,15 @@ public class PaginaOnlineController : ControllerBaseApi
     private readonly AppDbContext _db;
     private readonly PaginaPublicaService _paginas;
     private readonly IConfiguration _config;
+    private readonly LembreteService? _lembretes;
+    private readonly ListaDeEsperaService? _fila;
 
     public PaginaOnlineController(
-        AppDbContext db, PaginaPublicaService paginas, IConfiguration config)
+        AppDbContext db, PaginaPublicaService paginas, IConfiguration config,
+        LembreteService? lembretes = null, ListaDeEsperaService? fila = null)
     {
+        _lembretes = lembretes;
+        _fila = fila;
         _db = db;
         _paginas = paginas;
         _config = config;
@@ -121,8 +126,11 @@ public class PaginaOnlineController : ControllerBaseApi
     [RequerPermissao("pagina-online.ver")]
     public async Task<ActionResult<IReadOnlyList<AgendamentoDto>>> Pendentes(CancellationToken ct)
     {
+        // Quem presta cada serviço vem junto: sem ele, a linha de uma segunda pessoa saía
+        // "sem responsável".
         var pendentes = await _db.Agendamentos.AsNoTracking()
-            .Include(a => a.Cliente).Include(a => a.Responsavel).Include(a => a.Itens)
+            .Include(a => a.Cliente).Include(a => a.Responsavel)
+            .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
             .Where(a => a.Status == StatusAgendamento.PendenteAprovacao)
             .OrderBy(a => a.Inicio)
             .ToListAsync(ct);
@@ -177,7 +185,10 @@ public class PaginaOnlineController : ControllerBaseApi
 
         var agendamento = NaoNulo(
             await _db.Agendamentos
-                .Include(a => a.Cliente).Include(a => a.Responsavel).Include(a => a.Itens)
+                .Include(a => a.Cliente).Include(a => a.Responsavel)
+                // A resposta é a ficha que a tela passa a mostrar: sem quem presta cada
+                // serviço, aprovar apagava o nome da segunda pessoa até recarregar.
+                .Include(a => a.Itens).ThenInclude(i => i.Responsavel)
                 .FirstOrDefaultAsync(a => a.Id == id, ct),
             "Agendamento não encontrado.");
 
@@ -191,6 +202,27 @@ public class PaginaOnlineController : ControllerBaseApi
         agendamento.MotivoCancelamento = destino == StatusAgendamento.Cancelado ? motivo : null;
         await _db.SaveChangesAsync(ct);
         await trava.ConfirmarAsync(ct);
+
+        // Aprovado vira compromisso, e compromisso tem aviso: os lembretes do pedido nascem
+        // agora (enquanto pendente, a fila fica vazia de propósito). Recusado, nada fica.
+        if (_lembretes is not null)
+        {
+            if (destino == StatusAgendamento.Cancelado)
+            {
+                await _lembretes.CancelarPendentesAsync(agendamento.Id, ct);
+            }
+            else
+            {
+                await _lembretes.ReprogramarAsync(agendamento.Id, DateTimeOffset.UtcNow, ct);
+            }
+        }
+
+        // Aprovado, o pedido tira o cliente da fila de espera daquele serviço — enquanto
+        // pendente ele continuava esperando, e recusado continua.
+        if (_fila is not null && destino != StatusAgendamento.Cancelado)
+        {
+            await _fila.ConverterPorAgendamentoAsync(agendamento, ct);
+        }
 
         return Ok(agendamento.ParaDto());
     }

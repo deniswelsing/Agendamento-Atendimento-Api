@@ -51,7 +51,8 @@ public class CatalogoController : ControllerBaseApi
 
         var total = await consulta.CountAsync(ct);
         var itens = await consulta
-            .OrderBy(i => i.Tipo).ThenBy(i => i.Nome)
+            // O id desempata: com nomes iguais, cada página ordenava do seu jeito.
+            .OrderBy(i => i.Tipo).ThenBy(i => i.Nome).ThenBy(i => i.Id)
             .Skip(p.Pular).Take(p.TamanhoSeguro)
             .ToListAsync(ct);
 
@@ -126,6 +127,34 @@ public class CatalogoController : ControllerBaseApi
         {
             throw new RegraDeNegocioException("O preço não pode ser negativo.", "PRECO");
         }
+
+        // Comissão acima de 100% paga ao vendedor mais do que a venda rende, e custo ou
+        // estoque negativos são número inventado. Tudo isso era gravado sem pergunta.
+        if (req.ComissaoPercentual is < 0 or > 100)
+        {
+            throw new RegraDeNegocioException("A comissão deve ficar entre 0% e 100%.", "COMISSAO");
+        }
+
+        if (req.TaxaPercentual is < 0 or > 100)
+        {
+            throw new RegraDeNegocioException("A taxa deve ficar entre 0% e 100%.", "TAXA");
+        }
+
+        if (req.Custo < 0)
+        {
+            throw new RegraDeNegocioException("O custo não pode ser negativo.", "CUSTO");
+        }
+
+        if (req.Estoque is < 0)
+        {
+            throw new RegraDeNegocioException("O estoque não pode ser negativo.", "ESTOQUE");
+        }
+
+        Validacoes.Cabe(req.Nome, 200, "O nome");
+        Validacoes.Cabe(req.Descricao, 1000, "A descrição");
+        Validacoes.Cabe(req.Categoria, 120, "A categoria");
+        Validacoes.Cabe(req.CodigoDeBarras, 60, "O código de barras");
+        Validacoes.Cabe(req.ImagemUrl, 500, "O endereço da imagem");
 
         // Sem duração o serviço não entra no motor de disponibilidade.
         if (req.Tipo == TipoItem.Servico && (req.DuracaoMinutos is null or <= 0))
