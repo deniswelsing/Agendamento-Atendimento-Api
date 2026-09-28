@@ -413,4 +413,74 @@ public class AgendaCorrecoesTests : IAsyncLifetime
         Assert.NotEqual(StatusAgendamento.Cancelado,
             (await _db.Agendamentos.AsNoTracking().FirstAsync(a => a.Id == faturado.AgendamentoId)).Status);
     }
+
+    private PacotesController Pacotes()
+    {
+        var disponibilidade = new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc);
+        return new PacotesController(
+            _db, new PacoteAgendaService(_db, disponibilidade, RelogioDeTeste.Utc),
+            new RecorrenciaDePacotesService(_db, RelogioDeTeste.Utc), disponibilidade, RelogioDeTeste.Utc)
+        {
+            ControllerContext = ContextoDoController.Com("*"),
+        };
+    }
+
+    /// <summary>A Marina num pacote do serviço "Livre", com o ciclo aberto em volta da segunda.</summary>
+    private async Task<long> PacoteDaMarinaAsync(DayOfWeek? dia = null, TimeOnly? hora = null)
+    {
+        var pacote = new Pacote { TenantId = 1, Nome = "Mensal", QuantidadePorCliente = 4, PrecoPorCliente = 200m };
+        _db.Pacotes.Add(pacote);
+        await _db.SaveChangesAsync();
+        _db.PacoteItens.Add(new PacoteItem { TenantId = 1, PacoteId = pacote.Id, ItemCatalogoId = _livreId });
+        var vinculo = new PacoteCliente
+        {
+            TenantId = 1, PacoteId = pacote.Id, ClienteId = _clienteId, DiaDaSemana = dia, Hora = hora,
+        };
+        _db.PacoteClientes.Add(vinculo);
+        await _db.SaveChangesAsync();
+        _db.CiclosDePacote.Add(new CicloDoCliente
+        {
+            TenantId = 1, PacoteClienteId = vinculo.Id, Ciclo = 1,
+            Inicio = Segunda.AddDays(-7), Fim = Segunda.AddDays(7), QuantidadeContratada = 4,
+        });
+        await _db.SaveChangesAsync();
+        return vinculo.Id;
+    }
+
+    [Fact]
+    public async Task Sessao_de_pacote_nao_poe_o_cliente_em_dois_lugares()
+    {
+        // A Marina já está com a Ana às 10h. A agenda recusava outro atendimento dela às
+        // 10h, e a sessão do pacote, com o Caio, era gravada.
+        await MarcarAsync(_clienteId, 10, new[] { _livreId }, _anaId);
+        var vinculo = await PacoteDaMarinaAsync();
+
+        var recusa = await Assert.ThrowsAsync<RegraDeNegocioException>(() => Pacotes().Marcar(
+            vinculo, new MarcarDoPacoteRequest(As(10), _caioId), default));
+        Assert.Equal("CLIENTE_JA_AGENDADO", recusa.Codigo);
+        Assert.Equal(1, await _db.Agendamentos.CountAsync(a => a.ClienteId == _clienteId));
+
+        // Quando o outro termina, ela está livre.
+        var sessao = Corpo(await Pacotes().Marcar(
+            vinculo, new MarcarDoPacoteRequest(As(10, 30), _caioId), default));
+        Assert.Equal(As(10, 30), sessao.Inicio);
+    }
+
+    [Fact]
+    public async Task A_proposta_do_pacote_pula_o_horario_em_que_o_cliente_ja_esta()
+    {
+        // Combinado: segunda às 10h. Ela já tem 10h com a Ana, e a proposta era 10h com
+        // outra pessoa — que marcar agora recusa.
+        await MarcarAsync(_clienteId, 10, new[] { _livreId }, _anaId);
+        var vinculo = await PacoteDaMarinaAsync(DayOfWeek.Monday, new TimeOnly(10, 0));
+
+        var propostas = await new PacoteAgendaService(
+                _db, new DisponibilidadeService(_db, _contexto, RelogioDeTeste.Utc), RelogioDeTeste.Utc)
+            .ProporAsync(vinculo, Segunda);
+
+        var daSegunda = propostas.First(p => p.Data == Segunda);
+        Assert.True(daSegunda.TemEncaixe);
+        Assert.False(daSegunda.Inicio < As(10, 30) && daSegunda.Fim > As(10),
+            $"A proposta caiu em cima do atendimento das 10h: {daSegunda.Inicio:HH:mm}.");
+    }
 }

@@ -21,6 +21,7 @@ public enum RecusaPublica
     HorarioIndisponivel,
     LimiteDiario,
     DadosIncompletos,
+    ClienteJaAgendado,
 }
 
 public sealed record ResultadoPublico(bool Ok, RecusaPublica Motivo = RecusaPublica.Nenhuma,
@@ -298,6 +299,14 @@ public class PaginaPublicaService
 
         var fim = atribuicoes.Max(a => a.Fim);
         var cliente = await GarantirClienteAsync(nome, emailNormalizado, telefone, ct);
+
+        // A regra da agenda vale aqui: o mesmo cliente não fica em dois lugares ao mesmo
+        // tempo. A página marcava por cima do atendimento que ele já tinha com outra pessoa.
+        if (await _db.ClienteJaTemAtendimentoAsync(cliente, inicio, fim, null, ct))
+        {
+            return (new ResultadoPublico(false, RecusaPublica.ClienteJaAgendado,
+                "Você já tem um atendimento nesse horário. Escolha outro."), null);
+        }
 
         var agendamento = new Agendamento
         {

@@ -139,6 +139,35 @@ public class PaginaPublicaCorrecoesTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task O_mesmo_cliente_nao_marca_pela_pagina_onde_ja_tem_atendimento()
+    {
+        var servico = Servico();
+        var pagina = (await servico.AssumirPorSlugAsync("empresa-um"))!;
+
+        // A Marina marca X às 9h (Bruna). Às 9h o Caio está livre para Y, e a página punha
+        // a Marina nos dois lugares.
+        var (primeiro, _) = await servico.AgendarAsync(
+            pagina, "Marina", "marina@exemplo.com", "11911111111", new[] { _xId }, As(9),
+            null, null, SextaAnterior);
+        Assert.True(primeiro.Ok, primeiro.Mensagem);
+
+        var (segundo, agendamento) = await servico.AgendarAsync(
+            pagina, "Marina", "MARINA@exemplo.com", "11911111111", new[] { _yId }, As(9),
+            null, null, SextaAnterior);
+
+        Assert.False(segundo.Ok);
+        Assert.Equal(RecusaPublica.ClienteJaAgendado, segundo.Motivo);
+        Assert.Null(agendamento);
+        Assert.Equal(1, await _db.Agendamentos.CountAsync());
+
+        // Outra pessoa, no mesmo horário, com o Caio: pode.
+        var (outro, _) = await servico.AgendarAsync(
+            pagina, "João", "joao@exemplo.com", "11999998888", new[] { _yId }, As(9),
+            null, null, SextaAnterior);
+        Assert.True(outro.Ok, outro.Mensagem);
+    }
+
+    [Fact]
     public async Task Sem_escolha_de_profissional_os_horarios_nao_levam_o_time()
     {
         var controller = new PublicoController(_db, Servico())
